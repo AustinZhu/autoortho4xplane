@@ -1298,6 +1298,17 @@ _read_ahead_capacity = threading.BoundedSemaphore(2)
 _exact_row_executor = None
 _exact_row_executor_lock = threading.Lock()
 _exact_row_capacity = threading.BoundedSemaphore(2)
+# One live read can straddle two mipmaps.  Their builds run together on this
+# pool and fall back inline when it is full.  A region worker holds one
+# mipmap sliver, not a tile, so the pool is sized for the concurrent FUSE
+# reads seen during scenery load rather than for the admission bound.
+_read_region_workers = min(128, max(64, _live_tile_admission_limit * 4))
+_read_region_executor = None
+_read_region_executor_lock = threading.Lock()
+_read_region_capacity = threading.BoundedSemaphore(_read_region_workers)
+# Extra seconds a read waits for its region workers past the request budget
+# before serving the bytes that are present.
+_READ_REGION_JOIN_MARGIN = 5.0
 
 _shutdown_requested = threading.Event()
 
@@ -1637,6 +1648,18 @@ def _get_read_ahead_executor():
                     thread_name_prefix="ao-row-ahead",
                 )
     return _read_ahead_executor
+
+
+def _get_read_region_executor():
+    global _read_region_executor
+    if _read_region_executor is None:
+        with _read_region_executor_lock:
+            if _read_region_executor is None:
+                _read_region_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_read_region_workers,
+                    thread_name_prefix="ao-read-region",
+                )
+    return _read_region_executor
 
 
 # Track average fetch times
@@ -12740,32 +12763,108 @@ class Tile(object):
         if offset > 0 and offset < self.lowest_offset:
             self.lowest_offset = offset
 
-        request_end = offset + length
-        for mipmap in self.dds.mipmap_list:
-            overlap_start = max(offset, mipmap.startpos)
-            overlap_end = min(request_end, mipmap.endpos)
-            if overlap_start >= overlap_end:
-                continue
-            overlap_length = overlap_end - overlap_start
-            if (
-                overlap_start == mipmap.startpos
-                and overlap_length >= mipmap.length
-            ):
-                self.get_mipmap(
-                    mipmap.idx,
-                    time_budget=request_budget,
-                )
-            else:
-                self.get_bytes(
-                    overlap_start,
-                    overlap_length,
-                    time_budget=request_budget,
-                )
-        
+        self._resolve_read_regions(
+            self._read_regions(offset, length),
+            request_budget,
+        )
+
         self.bytes_read += length
         data = self._read_with_mm0_sealing(offset, length)
         self._record_mipmap_provenance(offset, len(data))
         return data
+
+    def _read_regions(self, offset, length):
+        """Return the ``(mipmap, start, length)`` regions a byte request overlaps."""
+        request_end = int(offset) + int(length)
+        regions = []
+        for mipmap in self.dds.mipmap_list:
+            overlap_start = max(int(offset), mipmap.startpos)
+            overlap_end = min(request_end, mipmap.endpos)
+            if overlap_start >= overlap_end:
+                continue
+            regions.append((mipmap, overlap_start, overlap_end - overlap_start))
+        return regions
+
+    def has_resolved_bytes(self, offset, length):
+        """Return True when every mipmap the request overlaps is fully built.
+
+        A partially written sparse mipmap is not resolved: its rows may still
+        need a build, so the caller keeps the live admission bound for it.
+        """
+        if self._closed or self.dds is None or int(length) <= 0:
+            return False
+        regions = self._read_regions(offset, length)
+        return bool(regions) and all(
+            mipmap.retrieved for mipmap, _start, _length in regions
+        )
+
+    def _resolve_region(self, mipmap, start, length, request_budget):
+        if start == mipmap.startpos and length >= mipmap.length:
+            self.get_mipmap(mipmap.idx, time_budget=request_budget)
+        else:
+            self.get_bytes(start, length, time_budget=request_budget)
+
+    def _resolve_read_regions(self, regions, request_budget):
+        """Build every region of one read, overlapping their chunk waits.
+
+        The 128-byte DDS header leaves every mipmap boundary unaligned, so a
+        block-sized NFS read regularly straddles two mipmaps.  Building the
+        regions one after another adds their network waits.  Building them
+        together costs the slowest one.  Exceptions are collected and the
+        first is raised after every region has finished, which keeps the
+        caller's fallback behaviour unchanged.
+        """
+        if len(regions) <= 1:
+            for region in regions:
+                self._resolve_region(*region, request_budget)
+            return
+
+        futures = []
+        inline = [regions[0]]
+        for region in regions[1:]:
+            if not _read_region_capacity.acquire(blocking=False):
+                bump("read_region_inline_fallback")
+                inline.append(region)
+                continue
+            try:
+                future = _get_read_region_executor().submit(
+                    self._resolve_region, *region, request_budget
+                )
+            except Exception:
+                _read_region_capacity.release()
+                inline.append(region)
+                continue
+            future.add_done_callback(lambda _f: _read_region_capacity.release())
+            futures.append(future)
+        bump("read_region_concurrent", len(futures))
+
+        errors = []
+        for region in inline:
+            try:
+                self._resolve_region(*region, request_budget)
+            except Exception as exc:
+                errors.append(exc)
+
+        remaining = getattr(request_budget, "remaining", None)
+        join_seconds = (
+            float(remaining) if remaining is not None else 0.0
+        ) + self.get_maxwait() + _READ_REGION_JOIN_MARGIN
+        deadline = time.monotonic() + max(0.0, join_seconds)
+        for future in futures:
+            try:
+                future.result(timeout=max(0.0, deadline - time.monotonic()))
+            except concurrent.futures.TimeoutError:
+                bump("read_region_join_timeout")
+                log.warning(
+                    "Tile %s read region build did not finish within %.1fs; "
+                    "serving current bytes",
+                    self.id,
+                    join_seconds,
+                )
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def _read_with_mm0_sealing(self, offset, length):
         mm0 = self.dds.mipmap_list[0]
@@ -15255,7 +15354,7 @@ class Tile(object):
                 source
                 for source in partial_sources
                 if isinstance(source, (bytes, bytearray))
-            ):
+            ), _native_build_context() as threads:
                 if (
                     allow_incomplete
                     and hasattr(native_dds, "build_partial_mipmap_v2")
@@ -16554,6 +16653,12 @@ class TileCacher(object):
             else:
                 poll_interval = poll_interval_normal
             time.sleep(poll_interval)
+
+    def peek_tile(self, row, col, map_type, zoom):
+        """Return the cached tile for a key without creating or touching it."""
+        idx = self._to_tile_id(row, col, map_type, zoom)
+        with self.tc_lock:
+            return self.tiles.get(idx)
 
     def _get_tile(self, row, col, map_type, zoom):
         

@@ -1567,22 +1567,53 @@ class AutoOrtho(Operations):
             admitted = False
             lock_held = True
             try:
-                admitted = getortho.acquire_live_tile_slot(
-                    max(0.0, request_deadline - time.monotonic())
+                # Admission bounds the memory of tiles under live build.  A
+                # read whose bytes are already built allocates nothing, so it
+                # skips the semaphore instead of queueing behind builds.
+                cached = self.tc.peek_tile(row, col, maptype, zoom)
+                resolved = (
+                    cached is not None
+                    and cached.has_resolved_bytes(offset, length)
                 )
-                if not admitted:
-                    read_outcome = "fallback"
-                    log.error(
-                        "Live tile admission timeout for %s after %ss",
-                        key,
-                        build_timeout,
+                if not resolved:
+                    admitted = getortho.acquire_live_tile_slot(
+                        max(0.0, request_deadline - time.monotonic())
                     )
-                    return _generate_fallback_dds_bytes(offset, length)
+                    if not admitted:
+                        read_outcome = "fallback"
+                        log.error(
+                            "Live tile admission timeout for %s after %ss",
+                            key,
+                            build_timeout,
+                        )
+                        return _generate_fallback_dds_bytes(offset, length)
                 with profile_span(
                     "tile.cache_lookup",
                     tile_id=tile_id,
                 ):
                     t = self.tc._get_tile(row, col, maptype, zoom)
+                if not admitted and (
+                    t is not cached or not t.has_resolved_bytes(offset, length)
+                ):
+                    # The tile changed between the peek and the lookup.
+                    admitted = getortho.acquire_live_tile_slot(
+                        max(0.0, request_deadline - time.monotonic())
+                    )
+                    if not admitted:
+                        read_outcome = "fallback"
+                        log.error(
+                            "Live tile admission timeout for %s after %ss",
+                            key,
+                            build_timeout,
+                        )
+                        return _generate_fallback_dds_bytes(offset, length)
+                elif not admitted:
+                    record_stage(
+                        "tile.admission_wait",
+                        0.0,
+                        tile_id=tile_id,
+                        outcome="resolved",
+                    )
                 # Tile/build coordinators provide the fine-grained safety below.
                 # Release the FUSE lookup lock before cache, network, decode, or
                 # compression work so disjoint row reads can proceed together.
