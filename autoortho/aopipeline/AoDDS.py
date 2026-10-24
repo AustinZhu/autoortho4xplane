@@ -2548,7 +2548,8 @@ def build_partial_mipmap(
     chunks_height: int,
     format: str = "BC1",
     missing_color: Tuple[int, int, int] = (66, 77, 55),
-    pool: Optional[c_void_p] = None
+    pool: Optional[c_void_p] = None,
+    max_threads: int = 0,
 ) -> PartialMipmapResult:
     """
     Build a rectangular partial mipmap from JPEG chunks.
@@ -2567,10 +2568,12 @@ def build_partial_mipmap(
         format: "BC1" (DXT1) or "BC3" (DXT5)
         missing_color: RGB tuple for missing chunks
         pool: Optional buffer pool (c_void_p from create_buffer_pool)
-    
+        max_threads: Upper bound on OpenMP worker threads (0 = runtime
+            default). The native team never exceeds the chunk count.
+
     Returns:
         PartialMipmapResult with compressed DXT data
-    
+
     Example:
         # Build single row (8 chunks × 1 row = 2048×256 pixels)
         result = build_partial_mipmap(
@@ -2645,11 +2648,12 @@ def build_partial_mipmap(
             POINTER(c_uint8),           # output
             c_uint32,                   # output_size
             POINTER(c_uint32),          # bytes_written
-            c_void_p                    # pool
+            c_void_p,                   # pool
+            c_int32                     # max_threads
         ]
         lib.aodds_build_partial_mipmap.restype = c_int32
         lib._partial_mipmap_setup_done = True
-    
+
     # Call native function
     success = lib.aodds_build_partial_mipmap(
         jpeg_ptrs,
@@ -2663,7 +2667,8 @@ def build_partial_mipmap(
         output_buffer.ctypes.data_as(POINTER(c_uint8)),
         c_uint32(output_size),
         byref(bytes_written),
-        pool_handle
+        pool_handle,
+        c_int32(max_threads)
     )
     
     elapsed_ms = (time.monotonic() - start_time) * 1000
@@ -2698,12 +2703,14 @@ def build_partial_mipmap_v2(
     format: str = "BC1",
     missing_color: Tuple[int, int, int] = (66, 77, 55),
     pool: Optional[c_void_p] = None,
+    max_threads: int = 0,
 ) -> PartialMipmapResult:
     """Build a partial mipmap from JPEGs, prepared pixels, or missing slots.
 
     Prepared pixels already represent the target child chunk. They are encoded
     only as an internal transport for the existing native decoder API; callers
     must not pass an un-cropped lower-ZL parent JPEG into a child slot.
+    ``max_threads`` bounds the native OpenMP team (0 = runtime default).
     """
     jpeg_datas = []
     prepared = []
@@ -2730,6 +2737,7 @@ def build_partial_mipmap_v2(
         format=format,
         missing_color=missing_color,
         pool=pool,
+        max_threads=max_threads,
     )
     if not result.success or not result.data or not prepared:
         return result

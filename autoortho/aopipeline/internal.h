@@ -153,6 +153,20 @@ static inline void safe_strcpy(char* dest, const char* src, size_t dest_size) {
   #define PATH_SEP_CHAR '/'
 #endif
 
+/* Maximum OpenMP threads we support for persistent resource pools */
+#define MAX_OMP_THREADS 64
+
+/* Team size for one parallel region: the caller's bound, or the runtime
+ * default, capped by the number of work items and MAX_OMP_THREADS. */
+static inline int32_t aodds_team_size(int32_t max_threads, int32_t work_items) {
+    int32_t threads = AODDS_OMP_THREADS(max_threads);
+    if (work_items < 1) work_items = 1;
+    if (threads > work_items) threads = work_items;
+    if (threads > MAX_OMP_THREADS) threads = MAX_OMP_THREADS;
+    if (threads < 1) threads = 1;
+    return threads;
+}
+
 /* ============================================================================
  * Thread-Local Storage (TLS) for Persistent Resources
  * ============================================================================
@@ -172,9 +186,6 @@ static inline void safe_strcpy(char* dest, const char* src, size_t dest_size) {
   #define TLS_VAR  /* Fallback: no TLS, will use array indexing */
   #define TLS_AVAILABLE 0
 #endif
-
-/* Maximum OpenMP threads we support for persistent resource pools */
-#define MAX_OMP_THREADS 64
 
 /* Note: aopipeline_stats_t is defined in aopipeline.h */
 
