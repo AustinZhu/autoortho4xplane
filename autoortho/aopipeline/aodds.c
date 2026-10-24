@@ -41,7 +41,7 @@
 #endif
 
 /* Version string */
-#define AODDS_VERSION "1.1.0"
+#define AODDS_VERSION "1.2.0"
 
 /* DDS file constants */
 #define DDS_MAGIC 0x20534444  /* "DDS " */
@@ -693,7 +693,8 @@ AODDS_API int32_t aodds_write_header(
 AODDS_API int32_t aodds_compose_chunks(
     aodecode_image_t* chunks,
     int32_t chunks_per_side,
-    aodecode_image_t* output
+    aodecode_image_t* output,
+    int32_t max_threads
 ) {
     if (!chunks || !output || !output->data || chunks_per_side <= 0) {
         return 0;
@@ -707,7 +708,7 @@ AODDS_API int32_t aodds_compose_chunks(
     int32_t chunk_count = chunks_per_side * chunks_per_side;
     
     /* Compose chunks into output - can be parallelized */
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, chunk_count)) schedule(dynamic, 4)
     for (int32_t i = 0; i < chunk_count; i++) {
         if (!chunks[i].data || chunks[i].width != CHUNK_SIZE || 
             chunks[i].height != CHUNK_SIZE) {
@@ -736,14 +737,15 @@ AODDS_API void aodds_fill_missing(
     aodecode_image_t* chunks,
     int32_t chunks_per_side,
     aodecode_image_t* output,
-    uint8_t r, uint8_t g, uint8_t b
+    uint8_t r, uint8_t g, uint8_t b,
+    int32_t max_threads
 ) {
     if (!chunks || !output || !output->data) return;
     
     int32_t chunk_count = chunks_per_side * chunks_per_side;
     
     /* Fill missing chunk areas with solid color */
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, chunk_count)) schedule(dynamic, 4)
     for (int32_t i = 0; i < chunk_count; i++) {
         if (chunks[i].data && chunks[i].width == CHUNK_SIZE && 
             chunks[i].height == CHUNK_SIZE) {
@@ -779,7 +781,8 @@ AODDS_API int32_t aodds_fill_and_compose(
     aodecode_image_t* chunks,
     int32_t chunks_per_side,
     aodecode_image_t* output,
-    uint8_t missing_r, uint8_t missing_g, uint8_t missing_b
+    uint8_t missing_r, uint8_t missing_g, uint8_t missing_b,
+    int32_t max_threads
 ) {
     if (!chunks || !output || !output->data || chunks_per_side <= 0) {
         return 0;
@@ -787,7 +790,7 @@ AODDS_API int32_t aodds_fill_and_compose(
     
     int32_t chunk_count = chunks_per_side * chunks_per_side;
     
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, chunk_count)) schedule(dynamic, 4)
     for (int32_t i = 0; i < chunk_count; i++) {
         int32_t chunk_row = i / chunks_per_side;
         int32_t chunk_col = i % chunks_per_side;
@@ -827,11 +830,12 @@ AODDS_API int32_t aodds_fill_and_compose(
  * SSE2-optimized mipmap reduction (2-4x faster than scalar on x86-64)
  * ============================================================================ */
 #if AODDS_HAS_SSE2
-static void reduce_half_sse2(const aodecode_image_t* input, aodecode_image_t* output) {
+static void reduce_half_sse2(const aodecode_image_t* input, aodecode_image_t* output,
+                             int32_t max_threads) {
     int32_t out_w = input->width / 2;
     int32_t out_h = input->height / 2;
     
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, out_h)) schedule(static)
     for (int32_t y = 0; y < out_h; y++) {
         const uint8_t* src_row0 = input->data + ((y * 2) * input->stride);
         const uint8_t* src_row1 = input->data + ((y * 2 + 1) * input->stride);
@@ -914,12 +918,13 @@ static void reduce_half_sse2(const aodecode_image_t* input, aodecode_image_t* ou
 #endif /* AODDS_HAS_SSE2 */
 
 /* Scalar implementation of reduce_half (fallback) */
-static void reduce_half_scalar(const aodecode_image_t* input, aodecode_image_t* output) {
+static void reduce_half_scalar(const aodecode_image_t* input, aodecode_image_t* output,
+                               int32_t max_threads) {
     int32_t out_w = input->width / 2;
     int32_t out_h = input->height / 2;
     
     /* 2x2 box filter with averaging */
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, out_h)) schedule(static)
     for (int32_t y = 0; y < out_h; y++) {
         const uint8_t* src_row0 = input->data + ((y * 2) * input->stride);
         const uint8_t* src_row1 = input->data + ((y * 2 + 1) * input->stride);
@@ -942,7 +947,8 @@ static void reduce_half_scalar(const aodecode_image_t* input, aodecode_image_t* 
 
 AODDS_API int32_t aodds_reduce_half(
     const aodecode_image_t* input,
-    aodecode_image_t* output
+    aodecode_image_t* output,
+    int32_t max_threads
 ) {
     if (!input || !input->data || !output || !output->data) {
         return 0;
@@ -958,13 +964,13 @@ AODDS_API int32_t aodds_reduce_half(
 #if AODDS_HAS_SSE2
     /* Use SSE2 path for dimensions that work well with SIMD */
     if (out_w >= 2) {
-        reduce_half_sse2(input, output);
+        reduce_half_sse2(input, output, max_threads);
         return 1;
     }
 #endif
     
     /* Fallback to scalar */
-    reduce_half_scalar(input, output);
+    reduce_half_scalar(input, output, max_threads);
     return 1;
 }
 
@@ -1046,11 +1052,12 @@ static void compress_bc1_block_simple(const uint8_t* rgba, uint8_t* block) {
     block[7] = (indices >> 24) & 0xFF;
 }
 
-static void compress_bc1_fallback(const aodecode_image_t* image, uint8_t* output) {
+static void compress_bc1_fallback(const aodecode_image_t* image, uint8_t* output,
+                                  int32_t max_threads) {
     int32_t blocks_x = (image->width + 3) / 4;
     int32_t blocks_y = (image->height + 3) / 4;
     
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, blocks_y)) schedule(static)
     for (int32_t by = 0; by < blocks_y; by++) {
         for (int32_t bx = 0; bx < blocks_x; bx++) {
             uint8_t block_rgba[16 * 4];
@@ -1173,11 +1180,12 @@ static void compress_alpha_block(const uint8_t* rgba, uint8_t* block) {
     block[7] = (indices >> 40) & 0xFF;
 }
 
-static void compress_bc3_fallback(const aodecode_image_t* image, uint8_t* output) {
+static void compress_bc3_fallback(const aodecode_image_t* image, uint8_t* output,
+                                  int32_t max_threads) {
     int32_t blocks_x = (image->width + 3) / 4;
     int32_t blocks_y = (image->height + 3) / 4;
     
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, blocks_y)) schedule(static)
     for (int32_t by = 0; by < blocks_y; by++) {
         for (int32_t bx = 0; bx < blocks_x; bx++) {
             uint8_t block_rgba[16 * 4];
@@ -1211,47 +1219,92 @@ static void compress_bc3_fallback(const aodecode_image_t* image, uint8_t* output
     }
 }
 
-AODDS_API uint32_t aodds_compress(
+/* A surface with fewer 4x4 blocks than this compresses on the calling
+ * thread. A team start costs more than it saves below this size. */
+#define AODDS_COMPRESS_MIN_PARALLEL_BLOCKS 16384
+/* Each band of a parallel compress holds at least this many block rows. */
+#define AODDS_COMPRESS_MIN_BAND_BLOCK_ROWS 4
+
+static void compress_surface_ispc(
     const aodecode_image_t* image,
     dds_format_t format,
     uint8_t* output
 ) {
+    rgba_surface_t surface = {
+        .ptr = image->data,
+        .width = image->width,
+        .height = image->height,
+        .stride = image->stride
+    };
+    if (format == DDS_FORMAT_BC1) {
+        ispc_compress_bc1(&surface, output);
+    } else {
+        ispc_compress_bc3(&surface, output);
+    }
+}
+
+AODDS_API uint32_t aodds_compress(
+    const aodecode_image_t* image,
+    dds_format_t format,
+    uint8_t* output,
+    int32_t max_threads
+) {
     if (!image || !image->data || !output) {
         return 0;
     }
-    
+
     /* Initialize ISPC if not done */
     aodds_init_ispc();
-    
+
     uint32_t block_size = (format == DDS_FORMAT_BC1) ? 8 : 16;
     uint32_t blocks_x = (image->width + 3) / 4;
     uint32_t blocks_y = (image->height + 3) / 4;
     uint32_t output_size = blocks_x * blocks_y * block_size;
-    
-    if (ispc_available && !force_fallback) {
-        /* Use ISPC compression */
-        rgba_surface_t surface = {
-            .ptr = image->data,
-            .width = image->width,
-            .height = image->height,
-            .stride = image->stride
-        };
-        
+
+    if (!ispc_available || force_fallback) {
         if (format == DDS_FORMAT_BC1) {
-            ispc_compress_bc1(&surface, output);
+            compress_bc1_fallback(image, output, max_threads);
         } else {
-            ispc_compress_bc3(&surface, output);
+            compress_bc3_fallback(image, output, max_threads);
         }
-    } else {
-        /* Fallback compression (simple inline implementation) */
-        if (format == DDS_FORMAT_BC1) {
-            compress_bc1_fallback(image, output);
-        } else {
-            /* BC3 = alpha block + BC1 color block */
-            compress_bc3_fallback(image, output);
-        }
+        return output_size;
     }
-    
+
+    /* Every 4x4 block is encoded from its own pixels, so bands of whole
+     * block rows produce the same bytes as one call over the surface. */
+    int32_t bands = 1;
+    if (blocks_x * blocks_y >= AODDS_COMPRESS_MIN_PARALLEL_BLOCKS &&
+        (image->height % 4) == 0) {
+        bands = aodds_team_size(
+            max_threads,
+            (int32_t)(blocks_y / AODDS_COMPRESS_MIN_BAND_BLOCK_ROWS)
+        );
+    }
+    if (bands <= 1) {
+        compress_surface_ispc(image, format, output);
+        return output_size;
+    }
+
+    uint32_t block_rows_per_band = (blocks_y + (uint32_t)bands - 1) / (uint32_t)bands;
+#pragma omp parallel for num_threads(bands) schedule(static)
+    for (int32_t band = 0; band < bands; band++) {
+        uint32_t first_block_row = (uint32_t)band * block_rows_per_band;
+        if (first_block_row >= blocks_y) {
+            continue;
+        }
+        uint32_t block_rows = blocks_y - first_block_row;
+        if (block_rows > block_rows_per_band) {
+            block_rows = block_rows_per_band;
+        }
+        aodecode_image_t part = *image;
+        part.data = image->data + (size_t)first_block_row * 4 * (size_t)image->stride;
+        part.height = (int32_t)(block_rows * 4);
+        compress_surface_ispc(
+            &part, format,
+            output + (size_t)first_block_row * blocks_x * block_size
+        );
+    }
+
     return output_size;
 }
 
@@ -1373,7 +1426,7 @@ AODDS_API int32_t aodds_build_tile(
     
     /* Fill and compose in a single pass for efficiency */
     aodds_fill_and_compose(chunks, chunks_per_side, &tile_image,
-                           request->missing_r, request->missing_g, request->missing_b);
+                           request->missing_r, request->missing_g, request->missing_b, 0);
     
     /* Free chunk images */
     for (int32_t i = 0; i < chunk_count; i++) {
@@ -1420,7 +1473,7 @@ AODDS_API int32_t aodds_build_tile(
         uint32_t compressed_size = aodds_compress(
             &current, request->format, 
             request->dds_buffer + offset
-        );
+        , 0);
         offset += compressed_size;
         request->stats.mipmaps_generated++;
         
@@ -1442,7 +1495,7 @@ AODDS_API int32_t aodds_build_tile(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, 0);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;  /* Toggle for next iteration */
@@ -1497,7 +1550,7 @@ AODDS_API int32_t aodds_build_from_chunks(
     
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(chunks, chunks_per_side, &tile,
-                           missing_color[0], missing_color[1], missing_color[2]);
+                           missing_color[0], missing_color[1], missing_color[2], 0);
     
     /* Write header */
     uint32_t offset = aodds_write_header(dds_output, tile_size, tile_size, 
@@ -1518,7 +1571,7 @@ AODDS_API int32_t aodds_build_from_chunks(
     int use_buf_a = 1;
     
     for (int32_t mip = 0; mip < mipmap_count; mip++) {
-        offset += aodds_compress(&current, format, dds_output + offset);
+        offset += aodds_compress(&current, format, dds_output + offset, 0);
         
         if (mip < mipmap_count - 1 && current.width > 4) {
             next.width = current.width / 2;
@@ -1536,7 +1589,7 @@ AODDS_API int32_t aodds_build_from_chunks(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, 0);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;
@@ -1743,7 +1796,7 @@ AODDS_API int32_t aodds_build_from_jpegs(
     
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(chunks, chunks_per_side, &tile,
-                           missing_r, missing_g, missing_b);
+                           missing_r, missing_g, missing_b, max_threads);
     
     /* Free chunk images */
     for (int32_t i = 0; i < chunk_count; i++) {
@@ -1770,7 +1823,7 @@ AODDS_API int32_t aodds_build_from_jpegs(
     int use_buf_a = 1;
     
     for (int32_t mip = 0; mip < mipmap_count; mip++) {
-        offset += aodds_compress(&current, format, dds_output + offset);
+        offset += aodds_compress(&current, format, dds_output + offset, max_threads);
         
         if (mip < mipmap_count - 1 && current.width > 4) {
             next.width = current.width / 2;
@@ -1788,7 +1841,7 @@ AODDS_API int32_t aodds_build_from_jpegs(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, max_threads);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;
@@ -2000,7 +2053,7 @@ AODDS_API int32_t aodds_build_single_mipmap(
     
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(chunks, chunks_per_side, &tile,
-                           missing_r, missing_g, missing_b);
+                           missing_r, missing_g, missing_b, max_threads);
     
     /* Free chunk images */
     for (int32_t i = 0; i < chunk_count; i++) {
@@ -2009,7 +2062,7 @@ AODDS_API int32_t aodds_build_single_mipmap(
     free(chunks);
     
     /* Compress tile image directly to output (no mipmap chain, no header) */
-    uint32_t compressed = aodds_compress(&tile, format, output);
+    uint32_t compressed = aodds_compress(&tile, format, output, max_threads);
     
     /* Cleanup */
     free(tile.data);
@@ -2032,7 +2085,8 @@ static int32_t aodds_fill_and_compose_rect(
     int32_t chunks_width,
     int32_t chunks_height,
     aodecode_image_t* output,
-    uint8_t missing_r, uint8_t missing_g, uint8_t missing_b
+    uint8_t missing_r, uint8_t missing_g, uint8_t missing_b,
+    int32_t max_threads
 ) {
     if (!chunks || !output || !output->data || 
         chunks_width <= 0 || chunks_height <= 0) {
@@ -2041,7 +2095,7 @@ static int32_t aodds_fill_and_compose_rect(
     
     int32_t chunk_count = chunks_width * chunks_height;
     
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel for num_threads(aodds_team_size(max_threads, chunk_count)) schedule(dynamic, 4)
     for (int32_t i = 0; i < chunk_count; i++) {
         int32_t chunk_row = i / chunks_width;
         int32_t chunk_col = i % chunks_width;
@@ -2101,7 +2155,8 @@ AODDS_API int32_t aodds_build_partial_mipmap(
     uint8_t* output,
     uint32_t output_size,
     uint32_t* bytes_written,
-    aodecode_pool_t* pool
+    aodecode_pool_t* pool,
+    int32_t max_threads
 ) {
     if (!jpeg_data || !jpeg_sizes || !output || !bytes_written || 
         chunks_width <= 0 || chunks_height <= 0) {
@@ -2130,7 +2185,7 @@ AODDS_API int32_t aodds_build_partial_mipmap(
     int32_t decoded = 0;
     
 #if AOPIPELINE_HAS_OPENMP
-    #pragma omp parallel reduction(+:decoded)
+    #pragma omp parallel num_threads(aodds_team_size(max_threads, chunk_count)) reduction(+:decoded)
     {
         /* Acquire decoder from thread-safe pool */
         int decoder_from_pool = 0;
@@ -2267,7 +2322,7 @@ AODDS_API int32_t aodds_build_partial_mipmap(
     
     /* Fill and compose using rectangular function */
     aodds_fill_and_compose_rect(chunks, chunks_width, chunks_height, &tile,
-                                missing_r, missing_g, missing_b);
+                                missing_r, missing_g, missing_b, max_threads);
     
     /* Free chunk images */
     for (int32_t i = 0; i < chunk_count; i++) {
@@ -2276,7 +2331,7 @@ AODDS_API int32_t aodds_build_partial_mipmap(
     free(chunks);
     
     /* Compress tile image directly to output (no mipmap chain, no header) */
-    uint32_t compressed = aodds_compress(&tile, format, output);
+    uint32_t compressed = aodds_compress(&tile, format, output, max_threads);
     
     /* Cleanup */
     free(tile.data);
@@ -2484,7 +2539,7 @@ AODDS_API int32_t aodds_build_mipmap_chain(
     
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(chunks, chunks_per_side, &tile,
-                           missing_r, missing_g, missing_b);
+                           missing_r, missing_g, missing_b, max_threads);
     
     /* Free chunk images */
     for (int32_t i = 0; i < chunk_count; i++) {
@@ -2515,7 +2570,7 @@ AODDS_API int32_t aodds_build_mipmap_chain(
         mipmap_offsets[mip] = offset;
         
         /* Compress current mipmap */
-        uint32_t compressed = aodds_compress(&current, format, output + offset);
+        uint32_t compressed = aodds_compress(&current, format, output + offset, max_threads);
         mipmap_sizes[mip] = compressed;
         offset += compressed;
         mip_count++;
@@ -2537,7 +2592,7 @@ AODDS_API int32_t aodds_build_mipmap_chain(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, max_threads);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;
@@ -2776,7 +2831,7 @@ AODDS_API int32_t aodds_build_all_mipmaps_native(
                         if (mip_image.data) {
                             /* Fill and compose */
                             aodds_fill_and_compose(chunks, chunks_per_side, &mip_image,
-                                                  missing_r, missing_g, missing_b);
+                                                  missing_r, missing_g, missing_b, max_threads);
                             mip_built_from_native = 1;
                         }
                     }
@@ -2805,14 +2860,14 @@ AODDS_API int32_t aodds_build_all_mipmaps_native(
             mip_image.data = (uint8_t*)malloc(mip_size * mip_size * 4);
             
             if (mip_image.data) {
-                aodds_reduce_half(&prev_mipmap, &mip_image);
+                aodds_reduce_half(&prev_mipmap, &mip_image, max_threads);
                 mip_built_from_native = 0;  /* Mark as fallback-built */
             }
         }
         
         /* If we have a mipmap image, compress it */
         if (mip_image.data) {
-            uint32_t compressed_size = aodds_compress(&mip_image, format, output + offset);
+            uint32_t compressed_size = aodds_compress(&mip_image, format, output + offset, max_threads);
             offset += compressed_size;
             
             /* Free previous mipmap and store current for next iteration's fallback */
@@ -3010,7 +3065,7 @@ AODDS_API int32_t aodds_build_from_jpegs_to_file(
     
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(chunks, chunks_per_side, &tile,
-                           missing_r, missing_g, missing_b);
+                           missing_r, missing_g, missing_b, max_threads);
     
     /* Free chunk images */
     for (int32_t i = 0; i < chunk_count; i++) {
@@ -3086,7 +3141,7 @@ AODDS_API int32_t aodds_build_from_jpegs_to_file(
     
     for (int32_t mip = 0; mip < mipmap_count && success; mip++) {
         /* Compress current mipmap to buffer */
-        uint32_t compressed_size = aodds_compress(&current, format, compress_buffer);
+        uint32_t compressed_size = aodds_compress(&current, format, compress_buffer, max_threads);
         
         /* Write compressed data to file */
         if (fwrite(compress_buffer, 1, compressed_size, fp) != compressed_size) {
@@ -3112,7 +3167,7 @@ AODDS_API int32_t aodds_build_from_jpegs_to_file(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, max_threads);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;
@@ -3241,7 +3296,7 @@ AODDS_API int32_t aodds_build_tile_to_file(
     
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(chunks, chunks_per_side, &tile,
-                           missing_r, missing_g, missing_b);
+                           missing_r, missing_g, missing_b, 0);
 
     /* Free chunk images */
     for (int32_t i = 0; i < chunk_count; i++) {
@@ -3311,7 +3366,7 @@ AODDS_API int32_t aodds_build_tile_to_file(
     int use_buf_a = 1;
     
     for (int32_t mip = 0; mip < mipmap_count && success; mip++) {
-        uint32_t compressed_size = aodds_compress(&current, format, compress_buffer);
+        uint32_t compressed_size = aodds_compress(&current, format, compress_buffer, 0);
         
         if (fwrite(compress_buffer, 1, compressed_size, fp) != compressed_size) {
             success = 0;
@@ -3334,7 +3389,7 @@ AODDS_API int32_t aodds_build_tile_to_file(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, 0);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;
@@ -4014,7 +4069,7 @@ AODDS_API int32_t aodds_builder_finalize(
 
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(builder->chunks, chunks_per_side, &builder->tile_image,
-                           builder->config.missing_r, builder->config.missing_g, builder->config.missing_b);
+                           builder->config.missing_r, builder->config.missing_g, builder->config.missing_b, max_threads);
     
     /* Write DDS header */
     int32_t header_written = aodds_write_header(dds_output, tile_size, tile_size, 
@@ -4069,7 +4124,7 @@ AODDS_API int32_t aodds_builder_finalize(
         }
         
         /* Compress directly to output buffer - no temp buffer needed */
-        uint32_t compressed_size = aodds_compress(&current, builder->config.format, output_ptr);
+        uint32_t compressed_size = aodds_compress(&current, builder->config.format, output_ptr, max_threads);
         output_ptr += compressed_size;
         total_written += compressed_size;
         
@@ -4088,7 +4143,7 @@ AODDS_API int32_t aodds_builder_finalize(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, max_threads);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;
@@ -4189,7 +4244,7 @@ AODDS_API int32_t aodds_builder_finalize_to_file(
     
     /* Fill and compose in a single pass */
     aodds_fill_and_compose(builder->chunks, chunks_per_side, &builder->tile_image,
-                           builder->config.missing_r, builder->config.missing_g, builder->config.missing_b);
+                           builder->config.missing_r, builder->config.missing_g, builder->config.missing_b, max_threads);
     
     /* Create temp file path */
     char temp_path[4096];
@@ -4271,7 +4326,7 @@ AODDS_API int32_t aodds_builder_finalize_to_file(
     int use_buf_a = 1;
     
     for (int32_t mip = 0; mip < mipmap_count && success; mip++) {
-        uint32_t compressed_size = aodds_compress(&current, builder->config.format, compress_buffer);
+        uint32_t compressed_size = aodds_compress(&current, builder->config.format, compress_buffer, max_threads);
         
         if (fwrite(compress_buffer, 1, compressed_size, fp) != compressed_size) {
             success = 0;
@@ -4294,7 +4349,7 @@ AODDS_API int32_t aodds_builder_finalize_to_file(
             }
             
             if (next.data) {
-                aodds_reduce_half(&current, &next);
+                aodds_reduce_half(&current, &next, max_threads);
                 current = next;
                 memset(&next, 0, sizeof(next));
                 use_buf_a = !use_buf_a;

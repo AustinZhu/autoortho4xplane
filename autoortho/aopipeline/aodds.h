@@ -166,16 +166,18 @@ AODDS_API int32_t aodds_write_header(
  * @param chunks            Array of decoded chunk images
  * @param chunks_per_side   Number of chunks per side
  * @param output            Output image (caller must allocate data)
- * 
+ * @param max_threads       Upper bound on worker threads (0 = runtime default)
+ *
  * @return 1 on success, 0 on failure
- * 
- * Note: Output image data must be pre-allocated to 
+ *
+ * Note: Output image data must be pre-allocated to
  * (chunks_per_side * 256) ^ 2 * 4 bytes
  */
 AODDS_API int32_t aodds_compose_chunks(
     aodecode_image_t* chunks,
     int32_t chunks_per_side,
-    aodecode_image_t* output
+    aodecode_image_t* output,
+    int32_t max_threads
 );
 
 /**
@@ -185,12 +187,14 @@ AODDS_API int32_t aodds_compose_chunks(
  * @param chunks_per_side   Number of chunks per side
  * @param output            Output image to fill
  * @param r, g, b           Fill color
+ * @param max_threads       Upper bound on worker threads (0 = runtime default)
  */
 AODDS_API void aodds_fill_missing(
     aodecode_image_t* chunks,
     int32_t chunks_per_side,
     aodecode_image_t* output,
-    uint8_t r, uint8_t g, uint8_t b
+    uint8_t r, uint8_t g, uint8_t b,
+    int32_t max_threads
 );
 
 /**
@@ -200,14 +204,16 @@ AODDS_API void aodds_fill_missing(
  * 
  * @param input     Source image
  * @param output    Output image (dimensions = input/2)
- * 
+ * @param max_threads Upper bound on worker threads (0 = runtime default)
+ *
  * @return 1 on success, 0 on failure
- * 
+ *
  * Note: Output data must be pre-allocated to (width/2) * (height/2) * 4 bytes
  */
 AODDS_API int32_t aodds_reduce_half(
     const aodecode_image_t* input,
-    aodecode_image_t* output
+    aodecode_image_t* output,
+    int32_t max_threads
 );
 
 /**
@@ -218,9 +224,12 @@ AODDS_API int32_t aodds_reduce_half(
  * @param image     Source RGBA image
  * @param format    Target compression format
  * @param output    Output buffer (must be correctly sized)
- * 
+ * @param max_threads Upper bound on worker threads (0 = runtime default).
+ *                  A surface large enough to split is compressed in bands
+ *                  of whole block rows. Bytes equal the single-thread output.
+ *
  * @return Number of bytes written, or 0 on failure
- * 
+ *
  * Required output size:
  * - BC1: (width/4) * (height/4) * 8 bytes
  * - BC3: (width/4) * (height/4) * 16 bytes
@@ -228,7 +237,8 @@ AODDS_API int32_t aodds_reduce_half(
 AODDS_API uint32_t aodds_compress(
     const aodecode_image_t* image,
     dds_format_t format,
-    uint8_t* output
+    uint8_t* output,
+    int32_t max_threads
 );
 
 /**
@@ -378,13 +388,15 @@ AODDS_API int32_t aodds_build_single_mipmap(
  * @param output_size       Output buffer size in bytes
  * @param bytes_written     Actual bytes written (output)
  * @param pool              Optional buffer pool for decode (may be NULL)
- * 
+ * @param max_threads       Upper bound on worker threads (0 = runtime default).
+ *                          The team never exceeds the chunk count.
+ *
  * @return 1 on success, 0 on failure
- * 
+ *
  * Memory: Output buffer must be at least:
  *         (chunks_width * 256 / 4) * (chunks_height * 256 / 4) * blocksize
  *         where blocksize is 8 for BC1, 16 for BC3.
- * 
+ *
  * Thread Safety: Thread-safe, can be called from multiple threads.
  */
 AODDS_API int32_t aodds_build_partial_mipmap(
@@ -399,7 +411,8 @@ AODDS_API int32_t aodds_build_partial_mipmap(
     uint8_t* output,
     uint32_t output_size,
     uint32_t* bytes_written,
-    aodecode_pool_t* pool
+    aodecode_pool_t* pool,
+    int32_t max_threads
 );
 
 /**

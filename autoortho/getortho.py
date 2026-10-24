@@ -10285,13 +10285,14 @@ class Tile(object):
         ):
             return False
         generation = self._mm0_rows.next_generation()
-        with self._source_lease(jpeg_datas):
+        with self._source_lease(jpeg_datas), _native_build_context() as threads:
             result = native_dds.build_partial_mipmap(
                 jpeg_datas=list(jpeg_datas),
                 chunks_width=self.chunks_per_row,
                 chunks_height=1,
                 format=CFG.pydds.format.upper(),
                 missing_color=tuple(CFG.autoortho.missing_color[:3]),
+                max_threads=threads,
             )
         row_bytes = self.dds.mipmap_list[0].length // self.chunks_per_col
         if (
@@ -15365,6 +15366,7 @@ class Tile(object):
                         chunks_height=chunks_height,
                         format=dxt_format,
                         missing_color=missing_color,
+                        max_threads=threads,
                     )
                 else:
                     result = native_dds.build_partial_mipmap(
@@ -15377,9 +15379,10 @@ class Tile(object):
                         chunks_width=chunks_width,
                         chunks_height=chunks_height,
                         format=dxt_format,
-                        missing_color=missing_color
+                        missing_color=missing_color,
+                        max_threads=threads,
                     )
-            
+
             if not result.success:
                 log.debug(f"_try_native_partial_mipmap_build: Build failed: {result.error}")
                 return False
