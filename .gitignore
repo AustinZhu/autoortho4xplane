@@ -2,6 +2,7 @@
 *.swp
 *.DS_Store
 __pycache__
+.venv/
 autoortho.log
 out.dds
 /cache

@@ -1,4 +1,4 @@
-# Native AutoOrtho for macOS
+# AutoOrtho for macOS
 
 The SwiftUI/AppKit app uses the patched AutoOrtho engine from `macos-foundation`.
 No Qt windows are created by the native interface. The Python engine, FUSE-T
@@ -13,7 +13,7 @@ The build verifies its engine modules against this checkout before packaging.
 
 ```sh
 python macos/build.py --engine-app /Applications/AutoOrtho.app
-open "macos/build/AutoOrtho Native.app"
+open "macos/build/AutoOrtho.app"
 ```
 
 Use the same Python minor version as the engine bundle. The current local bundle
@@ -23,8 +23,10 @@ The original startup and multiprocessing paths remain available to the helper.
 Native library verification compares Mach-O code/data sections because packaging
 changes rpaths and embedded signatures.
 
-Quit the native candidate before rebuilding it. Install alongside the original
-app during evaluation; do not run two streaming engines at the same time.
+Quit AutoOrtho before replacing its installed bundle. The builder also accepts
+the installed SwiftUI app as its engine source, reusing its embedded engine and
+original bootstrap without creating extra engine copies or nested dispatchers.
+Do not run two streaming engines at the same time.
 
 ## Interface
 

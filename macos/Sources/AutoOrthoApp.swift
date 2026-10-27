@@ -32,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct AutoOrthoNativeApp: App {
+struct AutoOrthoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var model = AppModel.shared
     @Environment(\.openWindow) private var openWindow
@@ -46,8 +46,8 @@ struct AutoOrthoNativeApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About AutoOrtho") {
                     NSApp.orderFrontStandardAboutPanel(options: [
-                        .applicationName: "AutoOrtho", .applicationVersion: "Native macOS · 0.1",
-                        .version: "Patched 3.0.1 streaming engine", .credits: NSAttributedString(string: "Native SwiftUI interface for AutoOrtho.\nhttps://github.com/AustinZhu/autoortho4xplane")
+                        .applicationName: "AutoOrtho", .applicationVersion: "0.1.0",
+                        .version: "Streaming engine 3.0.1", .credits: NSAttributedString(string: "AutoOrtho for macOS.\nhttps://github.com/AustinZhu/autoortho4xplane")
                     ])
                 }
             }

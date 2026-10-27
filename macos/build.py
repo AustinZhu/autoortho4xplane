@@ -56,6 +56,9 @@ def native_sections(path):
 def build(engine_app, destination):
     engine_app = engine_app.resolve()
     destination = destination.resolve()
+    embedded_engine = engine_app / 'Contents/Resources/Engine.app'
+    if embedded_engine.is_dir():
+        engine_app = embedded_engine
     assert engine_app != destination and engine_app not in destination.parents
     source_executable = engine_app / 'Contents/MacOS/autoortho'
     original = CArchiveReader(str(source_executable))
@@ -77,6 +80,12 @@ def build(engine_app, destination):
     resources.mkdir(parents=True); binary_dir.mkdir()
     helper = resources / 'Engine.app'
     shutil.copytree(engine_app, helper, symlinks=True)
+    helper_info_path = helper / 'Contents/Info.plist'
+    helper_info = plistlib.loads(helper_info_path.read_bytes())
+    helper_info.update(CFBundleIdentifier='com.autoortho.engine',
+                       CFBundleName='AutoOrtho Engine', CFBundleDisplayName='AutoOrtho Engine',
+                       LSUIElement=True)
+    helper_info_path.write_bytes(plistlib.dumps(helper_info))
     helper_executable = helper / 'Contents/MacOS/autoortho'
 
     # Append the bridge without recompressing unrelated engine modules.
@@ -86,6 +95,8 @@ def build(engine_app, destination):
     output_pyz.write(source_pyz[:header_length])
     toc = []
     for name, (kind, offset, length) in pyz.toc.items():
+        if name == 'native_service':
+            continue
         payload = source_pyz[offset:offset + length]
         toc.append((name, (kind, output_pyz.tell(), len(payload))))
         output_pyz.write(payload)
@@ -97,7 +108,14 @@ def build(engine_app, destination):
     output_pyz.seek(8); output_pyz.write(struct.pack('!i', toc_start))
     new_pyz = output_pyz.getvalue()
 
-    entry = original.extract('__main__')
+    saved_entry = engine_app / 'Contents/Resources/engine-entry.marshal'
+    if saved_entry.exists():
+        entry = saved_entry.read_bytes()
+    else:
+        assert 'native_service' not in pyz.toc, 'This earlier test helper has no saved engine entry; use the original engine bundle.'
+        entry = original.extract('__main__')
+    # Retain one original bootstrap so rebuilds never accumulate dispatch wrappers.
+    (helper / 'Contents/Resources/engine-entry.marshal').write_bytes(entry)
     dispatch = f'''import sys, multiprocessing, marshal, base64
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
@@ -138,6 +156,8 @@ else:
     verified = CArchiveReader(str(helper_executable))
     verified_pyz = verified.open_embedded_archive('PYZ.pyz')
     for name in pyz.toc:
+        if name == 'native_service':
+            continue
         assert verified_pyz.extract(name, raw=True) == pyz.extract(name, raw=True), name
     for name in original.toc:
         if name not in {'__main__', 'PYZ.pyz'}:
@@ -147,11 +167,11 @@ else:
     sources = sorted(str(path) for path in (ROOT / 'Sources').glob('*.swift'))
     command = ['xcrun', 'swiftc', '-swift-version', '5', '-O', '-parse-as-library',
                '-target', 'arm64-apple-macos14.0', '-module-cache-path', '/tmp/autoortho-native-module-cache',
-               *sources, '-o', str(binary_dir / 'AutoOrthoNative')]
+               *sources, '-o', str(binary_dir / 'AutoOrtho')]
     subprocess.run(command, check=True)
     shutil.copy2(engine_app / 'Contents/Resources/ao-icon.icns', resources / 'ao-icon.icns')
-    info = dict(CFBundleName='AutoOrtho', CFBundleDisplayName='AutoOrtho', CFBundleExecutable='AutoOrthoNative',
-                CFBundleIdentifier='com.austinzhu.autoortho.native', CFBundlePackageType='APPL',
+    info = dict(CFBundleName='AutoOrtho', CFBundleDisplayName='AutoOrtho', CFBundleExecutable='AutoOrtho',
+                CFBundleIdentifier='com.autoortho.app', CFBundlePackageType='APPL',
                 CFBundleShortVersionString='0.1.0', CFBundleVersion='1', CFBundleIconFile='ao-icon.icns',
                 LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True,
                 NSHumanReadableCopyright='AutoOrtho contributors. Apache License 2.0.',
@@ -162,7 +182,7 @@ else:
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(destination)], check=True)
     report = dict(app=str(destination), engine_source=str(engine_app),
                   source_engine_sha256=sha(source_executable), helper_sha256=sha(helper_executable),
-                  preserved_engine_modules=len(pyz.toc), changed_engine_modules=[],
+                  preserved_engine_modules=len(pyz.toc) - int('native_service' in pyz.toc), changed_engine_modules=[],
                   added_module='native_service', signature='deep strict verification passed',
                   foundation_commit='385f1f86a968bd682e6fd484cdce150e83472b38')
     (ROOT / 'build/verification.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -172,7 +192,7 @@ else:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--engine-app', type=Path, default=Path('/Applications/AutoOrtho.app'))
-    parser.add_argument('--output', type=Path, default=ROOT / 'build/AutoOrtho Native.app')
+    parser.add_argument('--output', type=Path, default=ROOT / 'build/AutoOrtho.app')
     args = parser.parse_args()
     (ROOT / 'build').mkdir(exist_ok=True)
     build(args.engine_app, args.output)
