@@ -667,7 +667,9 @@ class ConfigUI(QMainWindow):
             icon_path = ":/imgs/ao-icon.ico"
         else:
             icon_path = ":/imgs/ao-icon.png"
-        self.setWindowIcon(QIcon(icon_path))
+        # Preserve the native bundle icon in the macOS Dock, including its mask.
+        if self.system != 'darwin' or not getattr(sys, 'frozen', False):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.shell = ApplicationShell(
             app_name="AutoOrtho",
