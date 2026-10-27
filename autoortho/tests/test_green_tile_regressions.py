@@ -1,4 +1,4 @@
-"""Regression tests for live mipmap-zero rows served as missing color.
+"""Regression tests for live mipmaps served as missing color.
 
 Each test pins one defect that turned recoverable imagery into the configured
 missing color (the "green tiles" reports against 3.0.0).
@@ -339,3 +339,125 @@ def test_reopen_keeps_mipmap_unretrieved_until_rows_rebuilt(
     assert not tile._mipmap_rows_all_covered(0)
     coordinator.restore_coverage([3])
     assert tile._mipmap_rows_all_covered(0)
+
+
+# ---------------------------------------------------------------------------
+# Smaller mipmaps and lower-zoom cache fallbacks
+# ---------------------------------------------------------------------------
+
+_SOURCE_RGB = (200, 30, 30)
+
+
+class _OfflineGetter:
+    """Chunk getter whose downloads never complete."""
+
+    def submit(self, *args, **kwargs):
+        return None
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: 0
+
+
+@pytest.fixture
+def offline(monkeypatch):
+    monkeypatch.setattr(getortho, "chunk_getter", _OfflineGetter())
+    monkeypatch.setattr(getortho.CFG.autoortho, "suspend_maxwait", False)
+    monkeypatch.setattr(getortho.Tile, "maxchunk_wait", 0.05)
+
+
+def _write_chunk_jpeg(tmp_path, col, row, zoom):
+    AoImage.new("RGBA", (256, 256), _SOURCE_RGB).write_jpg(
+        str(tmp_path / f"{col}_{row}_{zoom}_BI.jpg")
+    )
+
+
+def _assert_source_color(data, blocksize):
+    """Assert every BC1/BC3 color block encodes the source color."""
+    assert data
+    color_offset = blocksize - 8
+    for block in range(0, len(data), blocksize):
+        for endpoint in (0, 2):
+            at = block + color_offset + endpoint
+            color = data[at] | (data[at + 1] << 8)
+            rgb = (
+                (color >> 11) << 3,
+                ((color >> 5) & 0x3F) << 2,
+                (color & 0x1F) << 3,
+            )
+            assert all(
+                abs(got - want) <= 16
+                for got, want in zip(rgb, _SOURCE_RGB)
+            ), rgb
+
+
+@pytest.mark.parametrize("tile_zoom", [16, 18])
+def test_partial_read_of_last_mipmap_builds_smaller_mipmaps(
+    no_dynamic_cache,
+    offline,
+    tmp_path,
+    tile_zoom,
+):
+    tile = _tile(tmp_path, tile_zoom, tile_zoom)
+    _write_chunk_jpeg(tmp_path, 0, 0, tile_zoom - tile.max_mipmap)
+    last = tile.dds.mipmap_list[tile.max_mipmap]
+    # A block read that ends inside the last mipmap (X-Plane paging a far
+    # texture) must not leave the smaller mipmaps unbuilt.
+    tile.read_dds_bytes(last.endpos - 4096, 4096)
+
+    smaller = tile.dds.mipmap_list[tile.max_mipmap + 1]
+    end = tile.dds.mipmap_list[-1].endpos
+    served = tile.read_dds_bytes(smaller.startpos, end - smaller.startpos)
+
+    _assert_source_color(served, tile.dds.blocksize)
+
+
+@pytest.mark.parametrize("mipmap", [1, 4])
+def test_lower_zoom_cache_fills_chunk_of_any_mipmap(
+    no_dynamic_cache,
+    tmp_path,
+    mipmap,
+):
+    tile = _tile(tmp_path, 18, 18)
+    zoom = 18 - mipmap
+    _write_chunk_jpeg(tmp_path, 0, 0, zoom - 1)
+
+    img, source = tile.get_best_chunk(1, 1, mipmap, zoom, with_source=True)
+
+    assert source == pydds.MipmapProvenance.LOWER_ZL_CACHE
+    assert img.size == (256, 256)
+
+
+def test_last_mipmap_uses_lower_zoom_cache_when_download_misses(
+    no_dynamic_cache,
+    offline,
+    tmp_path,
+):
+    tile = _tile(tmp_path, 18, 18)
+    # Only the ZL13 parent of the ZL14 chunk is cached.
+    _write_chunk_jpeg(tmp_path, 0, 0, 13)
+    last = tile.dds.mipmap_list[tile.max_mipmap]
+
+    served = tile.read_dds_bytes(last.startpos, last.length)
+
+    _assert_source_color(served, tile.dds.blocksize)
+
+
+def test_read_from_a_served_row_into_the_next_row_serves_imagery(
+    no_dynamic_cache,
+    offline,
+    tmp_path,
+):
+    tile = _tile(tmp_path, 16, 16)
+    for col in range(16):
+        for row in range(2):
+            _write_chunk_jpeg(tmp_path, col, row, 16)
+    row_bytes = tile.dds.mipmap_list[0].length // 16
+    # X-Plane reads 32 KiB blocks from offset 0. The block at row_bytes holds
+    # the last 128 bytes of row 0 and the start of row 1.
+    tile.read_dds_bytes(0, 32768)
+
+    straddling = tile.read_dds_bytes(row_bytes, 32768)
+    inside = tile.read_dds_bytes(row_bytes + 32768, 32768)
+
+    _assert_source_color(straddling, tile.dds.blocksize)
+    _assert_source_color(inside, tile.dds.blocksize)

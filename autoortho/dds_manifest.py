@@ -225,6 +225,19 @@ class RowStateCoordinator:
             self._generation += 1
             return self._generation
 
+    def unserved_span(self, start_row: int, end_row: int) -> tuple[int, int]:
+        """Return the row span without the served rows at either end.
+
+        A served row is sealed, so a commit that includes it fails. The span
+        is empty (start greater than end) when every row is served.
+        """
+        with self._condition:
+            while start_row <= end_row and self._states[start_row] in _SERVED_STATES:
+                start_row += 1
+            while end_row >= start_row and self._states[end_row] in _SERVED_STATES:
+                end_row -= 1
+            return start_row, end_row
+
     def mark_building(self, rows: Iterable[int], *, prefetch: bool = False) -> bool:
         state = RowState.PREFETCHING if prefetch else RowState.BUILDING
         with self._condition:
