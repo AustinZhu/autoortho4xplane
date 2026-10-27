@@ -443,6 +443,9 @@ dds_compression = zstd
 # Background builds can afford higher levels since writes are async
 # Recommended: 3 (balanced), 6 (smaller files), 1 (fastest writes)
 dds_compression_level = 3
+# Alpha (0-255) of the X-Plane 12 water variant of a tile texture, named <tile>_w.dds
+# 0 shows plain X-Plane water, 255 shows only the photo
+water_alpha = 96
 
 [scenery]
 # Don't cleanup downloads
