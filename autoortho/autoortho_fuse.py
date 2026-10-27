@@ -55,6 +55,21 @@ try:
 except ImportError:
     from diagnostics import profile_span, record_stage
 
+try:
+    from autoortho import pydds
+except ImportError:
+    import pydds
+
+# Tile DDS names. A ``_w`` before ``.dds`` names the X-Plane 12 water variant:
+# the same tile as DXT5 with the constant alpha ``[pydds] water_alpha``.
+DDS_PATH_RE = re.compile(r".*/(\d+)[-_](\d+)[-_]((?!ZL)\S*)(\d{2})(?:_w)?.dds")
+WATER_DDS_SUFFIX = "_w.dds"
+
+
+def _tile_dds_blocksize() -> int:
+    """Return the bytes per block of tile DDS files in the configured format."""
+    return 16 if CFG.pydds.format == 'BC3' else 8
+
 def _rgb_to_rgb565(r: int, g: int, b: int) -> int:
     """Convert RGB888 to RGB565 format used by BC1/DXT1 compression."""
     # RGB565: 5 bits red (high), 6 bits green (mid), 5 bits blue (low)
@@ -772,7 +787,7 @@ class AutoOrtho(Operations):
 
     def __init__(self, root, cache_dir='.cache', *args, **kwargs):
         log.info(f"ROOT: {root}")
-        self.dds_re = re.compile(r".*/(\d+)[-_](\d+)[-_]((?!ZL)\S*)(\d{2}).dds")
+        self.dds_re = DDS_PATH_RE
         self.ktx2_re = re.compile(r".*/(\d+)[-_](\d+)[-_]((?!ZL)\D*)(\d+).ktx2")
         self.dsf_re = re.compile(r".*/[-+]\d+[-+]\d+.dsf")
         self.ter_re = re.compile(r".*/\d+[-_]\d+[-_](\D*)(\d+).ter")
@@ -1066,11 +1081,8 @@ class AutoOrtho(Operations):
             dds_height = chunks_per_col * 256
             
             # Replicate DDS size calculation logic from pydds.DDS.__init__
-            if CFG.pydds.format == 'BC3':
-                blocksize = 16
-            else:
-                blocksize = 8
-            
+            blocksize = _tile_dds_blocksize()
+
             # Calculate total size including all mipmaps
             curbytes = 128  # DDS header size
             current_width = dds_width
@@ -1176,6 +1188,8 @@ class AutoOrtho(Operations):
         row, col, maptype, zoom = match.groups()
         maptype = self._resolve_dds_maptype(maptype)
         dds_size = self._get_dds_size_cached(int(row), int(col), maptype, int(zoom))
+        if path.endswith(WATER_DDS_SUFFIX):
+            dds_size = pydds.water_dds_size(dds_size, _tile_dds_blocksize())
         log.debug("GETATTR: Fetch for path: %s", path)
         
         attrs = {
@@ -1481,6 +1495,22 @@ class AutoOrtho(Operations):
     def read(self, path, length, offset, fh):
         log.debug(f"READ: {path} {offset} {length} {fh}")
         m = self.dds_re.match(path)
+        if m and path.endswith(WATER_DDS_SUFFIX):
+            # The water variant reads the blocks of its tile DDS, so both
+            # names share one tile, its imagery and its caches.
+            blocksize = _tile_dds_blocksize()
+            source_offset, source_length = pydds.water_source_range(
+                offset, length, blocksize
+            )
+            source = self.read(
+                path[:-len(WATER_DDS_SUFFIX)] + ".dds",
+                source_length,
+                source_offset,
+                fh,
+            )
+            return pydds.water_dds_bytes(
+                source, offset, length, CFG.pydds.water_alpha, blocksize
+            )
         if m:
             row, col, maptype, zoom = m.groups()
             row = int(row)

@@ -8,6 +8,8 @@ from binascii import hexlify
 from ctypes import *
 #from PIL import Image
 
+import numpy as np
+
 # Handle imports for both frozen (PyInstaller) and direct Python execution
 try:
     from autoortho.aoimage import AoImage as Image
@@ -105,6 +107,97 @@ def _get_fallback_slice(offset: int, length: int, blocksize: int = 8) -> bytes:
         return b""
     prefix = offset % blocksize
     return get_fallback_bytes(prefix + length, blocksize)[prefix:]
+
+
+# --- X-Plane 12 water variant ---
+# A WATER_COLOR_MASK terrain mixes the photo with X-Plane water by the alpha of
+# its base texture. The water variant of a tile DDS holds the same imagery as
+# DXT5 with one constant alpha. Each mipmap has the same block count in DXT1 and
+# DXT5, so the variant maps block for block onto the tile DDS.
+
+_HEADER_SIZE = 128
+_WATER_BLOCKSIZE = 16
+_PITCH_AT = 20
+_FOURCC_AT = 84
+
+
+def _water_data_offset(source_offset: int, source_blocksize: int) -> int:
+    """Map a block-aligned tile DDS data offset to the water variant."""
+    scale = _WATER_BLOCKSIZE // source_blocksize
+    return _HEADER_SIZE + (source_offset - _HEADER_SIZE) * scale
+
+
+def water_dds_size(source_size: int, source_blocksize: int) -> int:
+    """Return the size of the water variant of a tile DDS.
+
+    Args:
+        source_size: Size of the tile DDS in bytes.
+        source_blocksize: Bytes per block of the tile DDS, 8 or 16.
+    """
+    return _water_data_offset(source_size, source_blocksize)
+
+
+def water_source_range(offset: int, length: int, source_blocksize: int):
+    """Return the ``(offset, length)`` of the tile DDS bytes a water read needs.
+
+    The range starts at 0 when the read touches the header. Otherwise it
+    covers the whole blocks under the read.
+    """
+    first = max(offset - _HEADER_SIZE, 0) // _WATER_BLOCKSIZE
+    stop = -(-max(offset + length - _HEADER_SIZE, 0) // _WATER_BLOCKSIZE)
+    start = 0 if offset < _HEADER_SIZE else _HEADER_SIZE + first * source_blocksize
+    return start, _HEADER_SIZE + stop * source_blocksize - start
+
+
+def water_dds_bytes(
+    source: bytes,
+    offset: int,
+    length: int,
+    alpha: int,
+    source_blocksize: int,
+) -> bytes:
+    """Return bytes of the water variant of a tile DDS.
+
+    The header turns DXT1 into DXT5 and each block gets a constant alpha block.
+    Colour blocks pass through unchanged. That is exact for four-colour blocks,
+    which the ISPC compressor emits for opaque imagery.
+
+    Args:
+        source: Tile DDS bytes of the range from ``water_source_range``.
+        offset: Offset of the read in the water variant.
+        length: Length of the read. A read past the end returns fewer bytes.
+        alpha: Alpha of every texel, from 0 (plain water) to 255 (photo only).
+        source_blocksize: Bytes per block of the tile DDS, 8 or 16.
+
+    Raises:
+        ValueError: ``alpha`` lies outside 0 to 255.
+    """
+    alpha_block = np.frombuffer(bytes((alpha, alpha)) + bytes(6), dtype=np.uint8)
+    source_offset, _ = water_source_range(offset, length, source_blocksize)
+    out = bytearray()
+    data_at = 0
+    if source_offset == 0:
+        header = bytearray(source[:_HEADER_SIZE])
+        if header[_FOURCC_AT:_FOURCC_AT + 4] == b"DXT1":
+            header[_FOURCC_AT:_FOURCC_AT + 4] = b"DXT5"
+            pitch = int.from_bytes(header[_PITCH_AT:_PITCH_AT + 4], "little")
+            header[_PITCH_AT:_PITCH_AT + 4] = (pitch * 2).to_bytes(4, "little")
+        out += header
+        data_at = _HEADER_SIZE
+        out_offset = 0
+    else:
+        out_offset = _water_data_offset(source_offset, source_blocksize)
+    count = max(0, len(source) - data_at) // source_blocksize
+    colour = np.frombuffer(
+        memoryview(source)[data_at:data_at + count * source_blocksize],
+        dtype=np.uint8,
+    ).reshape(count, source_blocksize)[:, -8:]
+    blocks = np.empty((count, _WATER_BLOCKSIZE), dtype=np.uint8)
+    blocks[:, :8] = alpha_block
+    blocks[:, 8:] = colour
+    out += blocks.tobytes()
+    start = offset - out_offset
+    return bytes(out[start:start + length])
 
 
 class MipmapProvenanceGrid:
