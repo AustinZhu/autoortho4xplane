@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "AutoOrthoNative",
+    name: "AutoOrtho",
     platforms: [.macOS(.v14)],
-    products: [.executable(name: "AutoOrthoNative", targets: ["AutoOrthoNative"])],
-    targets: [.executableTarget(name: "AutoOrthoNative", path: "Sources")],
+    products: [.executable(name: "AutoOrtho", targets: ["AutoOrtho"])],
+    targets: [.executableTarget(name: "AutoOrtho", path: "Sources")],
     swiftLanguageModes: [.v5]
 )
