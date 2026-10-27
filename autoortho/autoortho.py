@@ -1265,10 +1265,11 @@ def main():
             app = QApplication(sys.argv)
             apply_theme(app)
             
-            # Set application icon - required for macOS dock icon visibility
+            # A macOS app bundle owns its Dock icon through CFBundleIconFile.
+            # Setting a Qt icon replaces the system-shaped icon with the raw image.
             if system_type == 'darwin':
-                # Use native macOS icon format
-                app.setWindowIcon(QIcon(":/imgs/ao-icon.icns"))
+                if not getattr(sys, 'frozen', False):
+                    app.setWindowIcon(QIcon(":/imgs/ao-icon.icns"))
             elif system_type == 'windows':
                 app.setWindowIcon(QIcon(":/imgs/ao-icon.ico"))
             else:
