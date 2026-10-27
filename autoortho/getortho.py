@@ -12478,8 +12478,10 @@ class Tile(object):
                 bump('live_aopipeline_exception')
         # ═══════════════════════════════════════════════════════════════════
         
-        if mipmap > self.max_mipmap:
-            # Just get the entire mipmap
+        if mipmap >= self.max_mipmap:
+            # The smaller mipmaps derive from max_mipmap, so they build
+            # together. A row build would install max_mipmap alone and its
+            # complete coordinator would then leave them in missing color.
             self.get_mipmap(self.max_mipmap, time_budget=time_budget)
             return True
 
@@ -12506,6 +12508,12 @@ class Tile(object):
             bytes_per_chunk_row,
             chunk_rows_in_mm,
         ) = self._partial_row_range(mipmap, offset, length)
+        if mipmap == 0:
+            # A read that starts in a served row would otherwise rebuild it,
+            # fail to commit, and leave the next row in missing color.
+            startrow, endrow = self._mm0_rows.unserved_span(startrow, endrow)
+            if startrow > endrow:
+                return True
         (
             composition_startrow,
             composition_endrow,
@@ -14398,20 +14406,20 @@ class Tile(object):
         """
         max_search_zoom = self.max_zoom
 
-        for i in range(mm + 1, self.max_mipmap + 1):
-            # Difference between requested mm and found image mm level
-            diff = i - mm
-            
+        # A chunk of any mipmap sits at ``zoom``, so its parents sit at
+        # ``zoom - diff``. Four levels (a 16 px crop upscaled 16x) is the
+        # coarsest fill kept.
+        for diff in range(1, 5):
             # Equivalent col, row, zl at lower zoom
             col_p = col >> diff
             row_p = row >> diff
-            zoom_p = zoom - i
-            
+            zoom_p = zoom - diff
+
             # Don't search beyond our detected actual_max_zoom
             if zoom_p > max_search_zoom:
                 continue
 
-            scalefactor = min(1 << diff, 16)
+            scalefactor = 1 << diff
 
             # OPTIMIZED: Direct cache path check without Chunk object creation
             # This avoids creating threading.Event objects for each lookup
@@ -14465,7 +14473,7 @@ class Tile(object):
             except (FileNotFoundError, PermissionError):
                 pass
         
-            log.debug(f"Found cached JPEG for {col}x{row}x{zoom} (mm{mm}) at {col_p}x{row_p}x{zoom_p} (mm{i}), upscaling {scalefactor}x")
+            log.debug(f"Found cached JPEG for {col}x{row}x{zoom} (mm{mm}) at {col_p}x{row_p}x{zoom_p}, upscaling {scalefactor}x")
             
             # Offset into chunk
             col_offset = col % scalefactor
