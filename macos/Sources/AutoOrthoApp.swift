@@ -81,6 +81,7 @@ struct AutoOrthoApp: App {
             Text(model.statusTitle)
             Text(model.mountSummary)
             if !model.running, let blocker = model.startBlocker { Text(blocker.message) }
+            if model.xplaneWaiting { Text("X-Plane is open — start streaming, then reload your flight") }
             Divider()
             StreamingCommandButton(model: model)
             Divider()

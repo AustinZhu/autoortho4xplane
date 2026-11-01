@@ -78,7 +78,9 @@ final class AppModel: ObservableObject {
         case "failed":
             let code = snapshot?.engineExit.map { " (exit code \($0))" } ?? ""
             return "The streaming engine exited\(code). The log shows what happened."
-        default: return "Start streaming before opening your X-Plane flight."
+        default:
+            return xplaneWaiting ? "X-Plane is open without AutoOrtho scenery. Start streaming, then reload your flight so its scenery and textures load."
+                                 : "Start streaming before opening your X-Plane flight."
         }
     }
     var mountSummary: String {
@@ -104,6 +106,9 @@ final class AppModel: ObservableObject {
     var canStart: Bool { !running && !busy && startBlocker == nil }
     var canStop: Bool { running && !busy && ownsStreaming }
     var stranded: Bool { snapshot?.status == "stranded" }
+    /// X-Plane is open while nothing streams: packages that read AutoOrtho's mounts
+    /// (e.g. meshes linking their textures into them) will report missing files.
+    var xplaneWaiting: Bool { snapshot != nil && !running && !stranded && xplaneRunning }
     private var strandedMounts: Bool { snapshot?.mounts.contains(where: \.mounted) == true }
     /// Catalog and installed regions together. Installed state comes only from the live installed
     /// list: the catalog's own flag is fixed when it was fetched and goes stale after installs and removals.

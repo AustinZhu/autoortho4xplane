@@ -103,7 +103,11 @@ struct OverviewView: View {
                         .font(.system(size: 42)).foregroundStyle(.tint).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
                         Text(model.statusTitle).font(.title2.weight(.semibold))
-                        Text(model.statusDetail).foregroundStyle(.secondary)
+                        if model.xplaneWaiting {
+                            Label(model.statusDetail, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        } else {
+                            Text(model.statusDetail).foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                 }.padding(.top, 8)
