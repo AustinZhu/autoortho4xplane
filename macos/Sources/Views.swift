@@ -482,6 +482,7 @@ struct DiagnosticsView: View {
                     .onChange(of: model.logs) { if follow && model.logQuery.isEmpty { proxy.scrollTo("end", anchor: .bottom) } }
                     .onChange(of: follow) { if follow { proxy.scrollTo("end", anchor: .bottom) } }
                 }
+                .searchable(text: $model.logQuery, prompt: "Filter log")
             } else if model.snapshot?.reports.isEmpty != false {
                 ContentUnavailableView("No performance reports", systemImage: "chart.xyaxis.line", description: Text("Turn on Record performance reports in Settings › Diagnostics. Reports appear after a streaming session ends."))
             } else {
@@ -498,14 +499,18 @@ struct DiagnosticsView: View {
                 }
             }
         }
-        .searchable(text: $model.logQuery, prompt: "Filter log")
         .toolbar {
-            Toggle(isOn: $follow) { Label("Follow Log", systemImage: "arrow.down.to.line") }
-                .help("Keep the newest log entries in view")
-            Button { model.exportLogs() } label: { Label("Export Log…", systemImage: "square.and.arrow.up") }
-            Button { Task { await model.readLogs() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+            // Log controls appear only with the log; Refresh applies to both tabs.
+            if tab == "Log" {
+                Toggle(isOn: $follow) { Label("Follow Log", systemImage: "arrow.down.to.line") }
+                    .help("Keep the newest log entries in view")
+                Button { model.exportLogs() } label: { Label("Export Log…", systemImage: "square.and.arrow.up") }
+            }
+            Button { Task { tab == "Log" ? await model.readLogs(force: true) : await model.refresh() } } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
         }
-        .task { await model.readLogs() }
+        .task { await model.readLogs(force: true) }
     }
     var filteredLogs: String { model.logQuery.isEmpty ? model.logs : model.logs.components(separatedBy: .newlines).filter { $0.localizedCaseInsensitiveContains(model.logQuery) }.joined(separator: "\n") }
 }

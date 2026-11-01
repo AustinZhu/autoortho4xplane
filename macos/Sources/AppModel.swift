@@ -248,11 +248,16 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Diagnostics
-    func readLogs() async {
+    private var logStamp = ""
+    /// Polls ask only for changes; `force` re-reads the log even if it looks unchanged.
+    func readLogs(force: Bool = false) async {
         do {
-            let data = try await bridge.request("logs", timeout: 10)
-            logs = (try JSONSerialization.jsonObject(with: data) as? [String: String])?["text"] ?? ""
-        } catch { logs = error.localizedDescription }
+            let data = try await bridge.request("logs", force ? [:] : ["since": logStamp], timeout: 10)
+            let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            logStamp = result["stamp"] as? String ?? ""
+            if result["unchanged"] as? Bool == true { return }
+            logs = result["text"] as? String ?? ""
+        } catch { logs = error.localizedDescription; logStamp = "" }
     }
 
     // MARK: Flight
