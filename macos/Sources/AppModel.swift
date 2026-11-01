@@ -61,7 +61,7 @@ final class AppModel: ObservableObject {
         case "streaming": return "Streaming scenery"
         case "starting": return "Starting streaming…"
         case "failed": return "Streaming stopped unexpectedly"
-        case "stranded": return "Scenery was left mounted"
+        case "stranded": return strandedMounts ? "Scenery was left mounted" : "Engine processes were left running"
         default: return snapshot?.ready == true ? "Ready to fly" : "Finish setting up"
         }
     }
@@ -73,7 +73,8 @@ final class AppModel: ObservableObject {
                                       : "Satellite scenery is available to X-Plane."
         case "starting": return "Mounting scenery for X-Plane. This can take a minute."
         case "stranded":
-            return "The streaming engine stopped, but its scenery is still mounted in X-Plane. Clean Up unmounts it."
+            return strandedMounts ? "The streaming engine stopped, but its scenery is still mounted in X-Plane. Clean Up unmounts it."
+                                  : "The streaming engine stopped, but some of its processes are still using memory. Clean Up ends them."
         case "failed":
             let code = snapshot?.engineExit.map { " (exit code \($0))" } ?? ""
             return "The streaming engine exited\(code). The log shows what happened."
@@ -103,6 +104,7 @@ final class AppModel: ObservableObject {
     var canStart: Bool { !running && !busy && startBlocker == nil }
     var canStop: Bool { running && !busy && ownsStreaming }
     var stranded: Bool { snapshot?.status == "stranded" }
+    private var strandedMounts: Bool { snapshot?.mounts.contains(where: \.mounted) == true }
     /// Catalog and installed regions together. Installed state comes only from the live installed
     /// list: the catalog's own flag is fixed when it was fetched and goes stale after installs and removals.
     var allRegions: [Region] {

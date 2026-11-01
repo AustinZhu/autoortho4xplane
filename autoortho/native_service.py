@@ -203,7 +203,7 @@ class NativeService:
         status = 'streaming' if mounted else ('starting' if owned else 'stopped')
         if code not in (None, 0) and not owned:
             status = 'failed'
-        if not owned and any(item['mounted'] for item in mounts) and self.stranded(mounts):
+        if not owned and self.stranded(mounts):
             status = 'stranded'
         cache = self.path('cache_dir', cfg)
         ancestor = cache
@@ -317,14 +317,21 @@ class NativeService:
         return [(pid, ppid, command) for pid, ppid, command in self.processes()
                 if any(f'--mountpoint {mountpoint}' in command for mountpoint in mountpoints)]
 
+    def orphans(self):
+        """Our engine's mount workers and multiprocessing helpers that outlived it (re-parented to launchd)."""
+        markers = ('--mountpoint', '--multiprocessing-fork', 'multiprocessing.resource_tracker')
+        return [(pid, command) for pid, ppid, command in self.processes()
+                if ppid == 1 and command.startswith(str(self.executable)) and any(m in command for m in markers)]
+
     def stranded(self, mounts):
-        """Mounted scenery with no live engine behind it: every worker serving it is orphaned (or gone)."""
+        """Leftovers of an engine that is gone: mounted scenery whose workers are all orphaned
+        (or missing), or orphaned engine processes still holding memory."""
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 return False
-        if not any(item['mounted'] for item in mounts):
-            return False
-        return all(ppid == 1 for _, ppid, _ in self.mount_workers(mounts))
+        if any(item['mounted'] for item in mounts):
+            return all(ppid == 1 for _, ppid, _ in self.mount_workers(mounts))
+        return bool(self.orphans())
 
     def cleanup(self):
         """Unmount scenery a stopped engine left behind and end its orphaned processes."""
@@ -334,7 +341,9 @@ class NativeService:
                 raise ValueError('Another AutoOrtho instance is serving this scenery. Stop it there.')
             return self.snapshot()
         # Orphaned workers unmount on SIGTERM; give them the graceful path first.
-        for pid, _, _ in self.mount_workers(mounts):
+        workers = {pid for pid, _, _ in self.mount_workers(mounts)}
+        workers |= {pid for pid, command in self.orphans() if '--mountpoint' in command}
+        for pid in sorted(workers):
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + 15
@@ -343,10 +352,9 @@ class NativeService:
         for item in self.mounts():
             if item['mounted']:
                 subprocess.run(['diskutil', 'unmount', 'force', item['path']], capture_output=True, check=False)
-        # The engine's multiprocessing helpers outlive it the same way.
-        for pid, ppid, command in self.processes():
-            if ppid == 1 and command.startswith(str(self.executable)) and (
-                    '--multiprocessing-fork' in command or 'multiprocessing.resource_tracker' in command):
+        # The engine's multiprocessing helpers (and any worker that ignored SIGTERM) outlive it the same way.
+        for pid, _ in self.orphans():
+            if pid not in workers:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.kill(pid, signal.SIGTERM)
         if any(item['mounted'] for item in self.mounts()):

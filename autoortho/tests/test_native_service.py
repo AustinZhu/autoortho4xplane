@@ -233,12 +233,13 @@ def test_orphaned_mount_is_stranded_and_cleaned_up(setup, monkeypatch):
     mounted = {'value': True}
     monkeypatch.setattr(native.os.path, 'ismount', lambda path: mounted['value'] and str(path).endswith('z_ao_asi'))
     path = service.mounts()[0]['path']
-    monkeypatch.setattr(service, 'processes', lambda: [(700, 1, f'/engine --mountpoint {path}'),
-                                                       (701, 1, '/not/launched --multiprocessing-fork tracker_fd=11')])
+    procs = [(700, 1, f'/engine --mountpoint {path}'), (701, 1, '/not/launched --multiprocessing-fork tracker_fd=11')]
+    monkeypatch.setattr(service, 'processes', lambda: list(procs))
     assert service.snapshot()['status'] == 'stranded'
     killed = []
     def kill(pid, sig):
         killed.append(pid)
+        procs[:] = [proc for proc in procs if proc[0] != pid]
         if pid == 700:
             mounted['value'] = False  # The worker unmounts on SIGTERM.
     monkeypatch.setattr(native.os, 'kill', kill)
@@ -257,3 +258,17 @@ def test_repeated_stop_signals_the_engine_once(setup):
     service.stopping = True  # A first stop is already in progress.
     service.stop()
     assert events == ['waited']
+
+
+def test_orphaned_processes_without_mounts_are_cleaned_up(setup, monkeypatch):
+    _, service = setup
+    monkeypatch.setattr(native.os.path, 'ismount', lambda path: False)
+    procs = [(800, 1, '/not/launched --root x --mountpoint /gone'), (801, 1, '/not/launched -c from multiprocessing.resource_tracker import main'),
+             (802, 1, '/other/app --multiprocessing-fork'), (803, 42, '/not/launched --multiprocessing-fork')]
+    monkeypatch.setattr(service, 'processes', lambda: procs)
+    assert service.snapshot()['status'] == 'stranded'
+    killed = []
+    monkeypatch.setattr(native.os, 'kill', lambda pid, sig: killed.append(pid))
+    service.cleanup()
+    # Only our engine's orphans: never another app's processes or ones with a live parent.
+    assert killed == [800, 801]
