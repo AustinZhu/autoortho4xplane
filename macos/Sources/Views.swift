@@ -12,6 +12,7 @@ struct RootView: View {
         NavigationSplitView {
             List(Destination.allCases, selection: $model.destination) { destination in
                 Label(destination.rawValue, systemImage: destination.symbol).tag(destination)
+                    .badge(destination == .activity ? model.runningTaskCount : 0)
             }
             .navigationSplitViewColumnWidth(min: 175, ideal: 210, max: 260)
             .safeAreaInset(edge: .bottom) { StatusFooter() }
@@ -121,7 +122,7 @@ struct OverviewView: View {
             Section("Scenery") {
                 LabeledContent("Installed regions", value: "\(model.snapshot?.regions.count ?? 0)")
                 ForEach(model.snapshot?.mounts ?? []) { mount in
-                    LabeledContent(mount.name, value: mount.mounted ? "Mounted" : "Not mounted")
+                    LabeledContent(model.regionName(forMount: mount.name), value: mount.mounted ? "Mounted" : "Not mounted")
                 }
                 Button("Manage Scenery…") { model.destination = .scenery }
             }
@@ -184,85 +185,162 @@ struct StreamingControls: View {
     }
 }
 
+// MARK: - Scenery
+
+struct PendingSceneryAction: Identifiable {
+    let region: Region
+    let action: SceneryAction
+    var id: String { region.id + action.rawValue }
+}
+
 struct SceneryView: View {
+    enum Filter: String, CaseIterable { case all = "All", installed = "Installed", available = "Available" }
     @EnvironmentObject var model: AppModel
-    @NativeState<Region?> private var selected = nil
-    @NativeState<String> private var action = ""
+    @NativeState<PendingSceneryAction?> private var pending = nil
+    @NativeState<Filter> private var filter = .all
+    var shown: [Region] {
+        model.regions.filter { filter == .all || (filter == .installed) == $0.installed }
+    }
+    var locked: Bool { model.running || model.hasRunningTask }
     var body: some View {
         VStack(spacing: 0) {
-            if model.regions.isEmpty {
+            if model.running { banner }
+            if model.regions.isEmpty && model.sceneryQuery.isEmpty {
                 ContentUnavailableView {
-                    Label("Add scenery", systemImage: "map")
-                } description: { Text("Browse the catalog to choose the regions you fly in.") }
-                actions: { Button("Browse Catalog") { Task { await model.catalog() } }.disabled(model.loadingCatalog) }
+                    Label(model.loadingCatalog ? "Loading regions…" : "Add scenery", systemImage: "map")
+                } description: { Text("Choose the regions you fly in. Each region is downloaded once and streamed to X-Plane.") }
+                actions: { Button("Browse Regions") { Task { await model.catalog() } }.disabled(model.loadingCatalog) }
+            } else if shown.isEmpty {
+                ContentUnavailableView.search(text: model.sceneryQuery)
             } else {
-                Table(model.regions) {
-                    TableColumn("Region") { region in
-                        Label(region.name, systemImage: "map").padding(.vertical, 6)
-                    }.width(min: 180, ideal: 260)
-                    TableColumn("Version", value: \.version).width(100)
-                    TableColumn("Status") { region in Text(region.installed ? "Installed" : "Available").foregroundStyle(region.installed ? .primary : .secondary) }.width(85)
-                    TableColumn("") { region in
-                        Menu {
-                            if !region.installed {
-                                Button("Install…") { selected = region; action = "install" }
-                            } else {
-                                Button("Apply Seasons…") { selected = region; action = "seasons" }
-                                Button("Restore Original Terrain…") { selected = region; action = "restore" }
-                                Button("Reduce Terrain Reflections…") { selected = region; action = "roughness" }
-                                Button("Restore Terrain Reflections…") { selected = region; action = "restore_roughness" }
-                                Divider()
-                                Button("Remove…", role: .destructive) { selected = region; action = "uninstall" }
-                            }
-                        } label: { Image(systemName: "ellipsis.circle") }
-                        .menuStyle(.borderlessButton).fixedSize()
-                        .accessibilityLabel("Options for \(region.name)")
-                        .disabled(model.running || model.hasRunningTask)
-                    }.width(40)
-                }
+                table
             }
             Divider()
-            HStack {
-                if model.loadingCatalog { ProgressView().controlSize(.small); Text("Loading catalog…") }
-                else { Text("\(model.snapshot?.regions.count ?? 0) installed regions").foregroundStyle(.secondary) }
+            HStack(spacing: 6) {
+                if model.loadingCatalog { ProgressView().controlSize(.small); Text("Loading regions…") }
+                else { Text(summary).foregroundStyle(.secondary) }
                 Spacer()
                 Button("Show in Finder") { model.reveal(model.setting("paths.scenery_path")) }
             }.font(.callout).padding(12)
         }
-        .searchable(text: $model.search, prompt: "Find a region")
-        .toolbar { Button { Task { await model.catalog() } } label: { Label("Refresh Catalog", systemImage: "arrow.clockwise") }.disabled(model.loadingCatalog) }
-        .confirmationDialog("\(action.capitalized) \(selected?.name ?? "scenery")?", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } }), titleVisibility: .visible) {
-            if let region = selected {
-                Button(action.capitalized, role: action == "uninstall" ? .destructive : nil) { Task { await model.scenery(region, action: action) }; selected = nil }
+        .searchable(text: $model.sceneryQuery, prompt: "Find a region")
+        .toolbar {
+            ToolbarItem {
+                Picker("Show", selection: $filter) { ForEach(Filter.allCases, id: \.self) { Text($0.rawValue) } }
+                    .pickerStyle(.segmented).help("Show all, installed or available regions")
             }
-            Button("Cancel", role: .cancel) { selected = nil }
-        } message: {
-            Text(action == "roughness" ? "This applies your terrain roughness setting to the region’s terrain files." :
-                 action == "restore_roughness" ? "This removes the terrain roughness adjustment from the region." :
-                 action == "restore" ? "This restores the original scenery terrain. Your local terrain patches may be replaced." :
-                 action == "uninstall" ? "The downloaded scenery files for this region will be removed." :
-                 action == "install" ? "Scenery packages can require substantial disk space. Progress appears in Activity." : "This modifies the region’s terrain files to support seasonal imagery.")
+            ToolbarItem {
+                Button { Task { await model.catalog() } } label: { Label("Refresh Regions", systemImage: "arrow.clockwise") }
+                    .disabled(model.loadingCatalog).help("Check for new and updated regions")
+            }
+        }
+        .task { await model.loadCatalogIfNeeded() }
+        .confirmationDialog(pending.map { "\($0.action.title) \($0.region.name)?" } ?? "",
+                            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), titleVisibility: .visible,
+                            presenting: pending) { item in
+            Button(item.action.title, role: item.action == .uninstall ? .destructive : nil) { Task { await model.scenery(item.region, action: item.action) } }
+            Button("Cancel", role: .cancel) { }
+        } message: { item in Text(message(for: item)) }
+    }
+    var banner: some View {
+        HStack {
+            Label("Stop streaming to install or change scenery.", systemImage: "lock").foregroundStyle(.secondary)
+            Spacer()
+            Button("Stop Streaming…") { model.requestStop() }.disabled(!model.canStop)
+        }.font(.callout).padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
+    }
+    var table: some View {
+        Table(shown) {
+            TableColumn("Region") { region in Text(region.name).padding(.vertical, 4) }.width(min: 180, ideal: 260)
+            TableColumn("Version", value: \.version).width(min: 70, ideal: 90)
+            TableColumn("Size") { region in Text(region.bytes > 0 ? byteLabel(region.bytes) : "—").monospacedDigit().foregroundStyle(.secondary) }
+                .width(min: 70, ideal: 80)
+            TableColumn("Status") { region in status(region) }.width(min: 110, ideal: 170)
+            TableColumn("") { region in actions(region) }.width(90)
         }
     }
+    @ViewBuilder func status(_ region: Region) -> some View {
+        if let task = model.task(for: region) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let value = task.progress { ProgressView(value: value).controlSize(.small) } else { ProgressView().controlSize(.small) }
+                Text(task.message).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        } else {
+            Text(region.installed ? "Installed" : "Available").foregroundStyle(region.installed ? .primary : .secondary)
+        }
+    }
+    @ViewBuilder func actions(_ region: Region) -> some View {
+        if region.installed {
+            Menu {
+                Button("Apply Seasons…") { request(region, .seasons) }
+                Button("Restore Original Terrain…") { request(region, .restore) }
+                Button("Reduce Terrain Reflections…") { request(region, .roughness) }
+                Button("Restore Terrain Reflections…") { request(region, .restore_roughness) }
+                Divider()
+                Button("Remove…", role: .destructive) { request(region, .uninstall) }
+            } label: { Image(systemName: "ellipsis.circle") }
+            .menuStyle(.borderlessButton).fixedSize()
+            .accessibilityLabel("Options for \(region.name)")
+            .disabled(locked).help(lockReason ?? "Region options")
+        } else {
+            Button("Install") { request(region, .install) }
+                .controlSize(.small).disabled(locked).help(lockReason ?? "Download and install \(region.name)")
+        }
+    }
+    var lockReason: String? {
+        model.running ? "Stop streaming to change scenery." : model.hasRunningTask ? "Wait for the current scenery operation to finish." : nil
+    }
+    var summary: String {
+        let installed = model.snapshot?.regions.count ?? 0
+        let available = (model.snapshot?.catalog ?? []).filter { !$0.installed }.count
+        let free = byteLabel(model.snapshot?.freeBytes ?? 0)
+        return available > 0 ? "\(installed) installed · \(available) available · \(free) free" : "\(installed) installed · \(free) free"
+    }
+    func request(_ region: Region, _ action: SceneryAction) {
+        if action == .install, region.bytes > 0, region.bytes > (model.snapshot?.freeBytes ?? .max) {
+            model.error = "\(region.name) needs about \(byteLabel(region.bytes)), but only \(byteLabel(model.snapshot?.freeBytes ?? 0)) is available."
+            return
+        }
+        pending = .init(region: region, action: action)
+    }
+    func message(for item: PendingSceneryAction) -> String {
+        guard item.action == .install else { return item.action.message }
+        let size = item.region.bytes > 0 ? " Download size: \(byteLabel(item.region.bytes))." : ""
+        return "\(item.action.message)\(size) Available: \(byteLabel(model.snapshot?.freeBytes ?? 0)). Progress appears in this list and in Activity."
+    }
 }
+
+// MARK: - Activity
 
 struct ActivityView: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
-        if model.snapshot?.tasks.isEmpty != false {
-            ContentUnavailableView("No active tasks", systemImage: "checkmark.circle", description: Text("Scenery downloads and terrain operations appear here."))
+        if model.tasks.isEmpty {
+            ContentUnavailableView("No scenery operations", systemImage: "checkmark.circle", description: Text("Scenery downloads and terrain operations appear here."))
         } else {
-            List(model.snapshot?.tasks ?? []) { task in
+            List(model.tasks.reversed()) { task in
                 VStack(alignment: .leading, spacing: 8) {
-                    Label(task.title, systemImage: task.state == "complete" ? "checkmark.circle" : task.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle")
-                        .font(.headline)
+                    Label {
+                        Text(model.taskTitle(task))
+                    } icon: {
+                        Image(systemName: icon(task)).foregroundStyle(task.state == "failed" ? .red : task.state == "complete" ? .green : .accentColor)
+                    }.font(.headline)
                     if task.state == "running" {
-                        if let value = task.progress { ProgressView(value: value) }
-                        else { ProgressView().controlSize(.small) }
+                        if let value = task.progress { ProgressView(value: value) } else { ProgressView().controlSize(.small) }
                     }
-                    Text(task.message).foregroundStyle(.secondary).textSelection(.enabled)
+                    HStack {
+                        Text(task.message).foregroundStyle(.secondary).textSelection(.enabled)
+                        if task.state == "failed" { Spacer(); Button("View Log") { model.destination = .diagnostics } }
+                    }
                 }.padding(.vertical, 10)
             }
+        }
+    }
+    func icon(_ task: EngineTask) -> String {
+        switch task.state {
+        case "complete": return "checkmark.circle.fill"
+        case "failed": return "exclamationmark.triangle.fill"
+        default: return "arrow.down.circle"
         }
     }
 }

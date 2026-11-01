@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     @Published var transition: String?
     @Published var loadingCatalog = false
     @Published var logs = ""
+    @Published var sceneryQuery = ""
     @Published var search = ""
     @Published var edits: [String: String] = [:]
     @Published var pilotID = ""
@@ -36,9 +37,12 @@ final class AppModel: ObservableObject {
     private var refreshing = false
     private var polling: Task<Void, Never>?
     private var hadStreaming = false
+
     var running: Bool { ["streaming", "starting"].contains(snapshot?.status ?? "") }
     var ownsStreaming: Bool { snapshot?.owned == true }
-    var hasRunningTask: Bool { snapshot?.tasks.contains { $0.state == "running" } ?? false }
+    var tasks: [EngineTask] { snapshot?.tasks ?? [] }
+    var hasRunningTask: Bool { tasks.contains { $0.state == "running" } }
+    var runningTaskCount: Int { tasks.filter { $0.state == "running" }.count }
     var statusTitle: String {
         if let transition { return transition }
         switch snapshot?.status {
@@ -83,8 +87,21 @@ final class AppModel: ObservableObject {
     var regions: [Region] {
         var items = Dictionary(uniqueKeysWithValues: (snapshot?.catalog ?? []).map { ($0.id, $0) })
         for region in snapshot?.regions ?? [] { items[region.id] = region }
-        return items.values.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
+        return items.values.filter { sceneryQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(sceneryQuery) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    func task(for region: Region) -> EngineTask? {
+        tasks.last { $0.region == region.id && $0.state == "running" }
+    }
+    /// Scenery mounts are named z_ao_<region id>; show the region's catalog name instead.
+    func regionName(forMount name: String) -> String {
+        let id = name.hasPrefix("z_ao_") ? String(name.dropFirst(5)) : name
+        return (snapshot?.regions ?? []).first { $0.id == id }?.name ?? (snapshot?.catalog ?? []).first { $0.id == id }?.name ?? name
+    }
+    func taskTitle(_ task: EngineTask) -> String {
+        guard let action = task.action.flatMap(SceneryAction.init(rawValue:)), let id = task.region else { return task.title }
+        let name = (snapshot?.catalog ?? []).first { $0.id == id }?.name ?? (snapshot?.regions ?? []).first { $0.id == id }?.name ?? id
+        return "\(action.progressTitle) \(name)"
     }
 
     func begin() {
@@ -112,6 +129,8 @@ final class AppModel: ObservableObject {
             if destination == .diagnostics { await readLogs() }
         } catch { if snapshot == nil { self.error = error.localizedDescription } }
     }
+
+    // MARK: Settings
     func setting(_ id: String) -> String {
         edits[id] ?? snapshot?.settings.first(where: { $0.id == id })?.value ?? ""
     }
@@ -167,21 +186,36 @@ final class AppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    // MARK: Scenery
+    private var catalogAttempted = false
     func catalog() async {
+        catalogAttempted = true
         loadingCatalog = true; defer { loadingCatalog = false }
         do { _ = try await bridge.request("catalog"); await refresh() }
         catch { self.error = error.localizedDescription }
     }
-    func scenery(_ region: Region, action: String) async {
-        do { _ = try await bridge.request("scenery", ["region": region.id, "action": action]); destination = .activity; await refresh() }
+    /// Loads the catalog once per session when Scenery first opens. Failures stay quiet;
+    /// the Browse Regions and Refresh buttons retry and report errors.
+    func loadCatalogIfNeeded() async {
+        guard !catalogAttempted, !loadingCatalog, snapshot?.catalog.isEmpty != false else { return }
+        catalogAttempted = true
+        loadingCatalog = true; defer { loadingCatalog = false }
+        if (try? await bridge.request("catalog", timeout: 60)) != nil { await refresh() }
+    }
+    func scenery(_ region: Region, action: SceneryAction) async {
+        do { _ = try await bridge.request("scenery", ["region": region.id, "action": action.rawValue]); await refresh() }
         catch { self.error = error.localizedDescription }
     }
+
+    // MARK: Diagnostics
     func readLogs() async {
         do {
             let data = try await bridge.request("logs", timeout: 10)
             logs = (try JSONSerialization.jsonObject(with: data) as? [String: String])?["text"] ?? ""
         } catch { logs = error.localizedDescription }
     }
+
+    // MARK: Flight
     func loadFlight() async {
         loadingFlight = true; defer { loadingFlight = false }
         do {
@@ -201,6 +235,7 @@ final class AppModel: ObservableObject {
             }
         } catch { self.error = error.localizedDescription }
     }
+    /// Saves a pilot ID that loaded successfully, when that can be done without touching other pending edits.
     func loadImagery() async {
         do {
             let data = try await bridge.request("imagery")
@@ -224,6 +259,8 @@ final class AppModel: ObservableObject {
               (-90...90).contains(lat), (-180...180).contains(lon), lat != 0 || lon != 0 else { return }
         aircraft = .init(latitude: lat, longitude: lon)
     }
+
+    // MARK: Files
     func chooseDirectory(_ id: String, applyNow: Bool = false) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.canCreateDirectories = true; panel.prompt = "Choose"

@@ -35,6 +35,8 @@ struct EngineTask: Codable, Identifiable {
     let state: String
     let message: String
     let progress: Double?
+    let region: String?
+    let action: String?
 }
 struct Report: Codable, Identifiable {
     let id: String
@@ -76,6 +78,41 @@ enum Destination: String, CaseIterable, Identifiable {
         case .flight: return "point.topleft.down.to.point.bottomright.curvepath"
         case .activity: return "arrow.down.circle"
         case .diagnostics: return "waveform.path.ecg"
+        }
+    }
+}
+
+/// User-facing names for scenery operations, shared by menus, dialogs and Activity.
+enum SceneryAction: String {
+    case install, uninstall, seasons, restore, roughness, restore_roughness
+    var title: String {
+        switch self {
+        case .install: return "Install"
+        case .uninstall: return "Remove"
+        case .seasons: return "Apply Seasons"
+        case .restore: return "Restore Original Terrain"
+        case .roughness: return "Reduce Terrain Reflections"
+        case .restore_roughness: return "Restore Terrain Reflections"
+        }
+    }
+    var progressTitle: String {
+        switch self {
+        case .install: return "Installing"
+        case .uninstall: return "Removing"
+        case .seasons: return "Applying seasons to"
+        case .restore: return "Restoring terrain for"
+        case .roughness: return "Reducing reflections for"
+        case .restore_roughness: return "Restoring reflections for"
+        }
+    }
+    var message: String {
+        switch self {
+        case .install: return "Scenery packages can require substantial disk space."
+        case .uninstall: return "The downloaded scenery files for this region will be removed."
+        case .seasons: return "This modifies the region’s terrain files to support seasonal imagery."
+        case .restore: return "This restores the original scenery terrain. Your local terrain patches may be replaced."
+        case .roughness: return "This applies your terrain roughness setting to the region’s terrain files."
+        case .restore_roughness: return "This removes the terrain roughness adjustment from the region."
         }
     }
 }
