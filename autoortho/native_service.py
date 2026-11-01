@@ -153,6 +153,7 @@ class NativeService:
         self.lock = threading.RLock()
         # AO_RUN_MODE is process-wide; catalog and scenery threads must not interleave its save/restore.
         self.env_lock = threading.RLock()
+        self.stopping = False
         self.tasks = {}
         self.catalog = []
         self.plan = None
@@ -202,6 +203,8 @@ class NativeService:
         status = 'streaming' if mounted else ('starting' if owned else 'stopped')
         if code not in (None, 0) and not owned:
             status = 'failed'
+        if not owned and any(item['mounted'] for item in mounts) and self.stranded(mounts):
+            status = 'stranded'
         cache = self.path('cache_dir', cfg)
         ancestor = cache
         while not ancestor.exists() and ancestor != ancestor.parent:
@@ -237,6 +240,8 @@ class NativeService:
                 self.engine_lock.close()
                 self.engine_lock = None
             if any(item['mounted'] for item in self.mounts()):
+                if self.stranded(self.mounts()):
+                    raise ValueError('Scenery from a stopped engine is still mounted. Use Clean Up first.')
                 raise ValueError('Another AutoOrtho instance owns these mounts. Stop it first.')
             if not self.snapshot()['ready']:
                 raise ValueError('Complete the setup checks before starting streaming.')
@@ -267,21 +272,86 @@ class NativeService:
     def stop(self):
         with self.lock:
             process = self.process
-        if process is None:
-            # Observing a legacy app's mounts does not transfer their ownership.
-            return {'stopped': True}
-        if process and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=120)
-            except subprocess.TimeoutExpired:
-                raise ValueError('The engine is still unmounting. It has not been force-quit.') from None
-        if any(item['mounted'] for item in self.mounts()):
-            raise ValueError('Scenery remains mounted. See Diagnostics before quitting.')
+            # Signal once: a second stop (e.g. Quit during Stop) only waits, so it
+            # can't interrupt the engine's own unmount and worker shutdown.
+            signal_engine = process is not None and not self.stopping
+            if signal_engine:
+                self.stopping = True
+        try:
+            if process is None:
+                # Observing another app's mounts does not transfer their ownership,
+                # but scenery our own engine left behind is ours to clean up.
+                if self.stranded(self.mounts()):
+                    self.cleanup()
+                return {'stopped': True}
+            if process.poll() is None:
+                if signal_engine:
+                    process.terminate()
+                try:
+                    process.wait(timeout=120)
+                except subprocess.TimeoutExpired:
+                    raise ValueError('The engine is still unmounting. It has not been force-quit.') from None
+            if any(item['mounted'] for item in self.mounts()):
+                self.cleanup()
+        finally:
+            if signal_engine:
+                with self.lock:
+                    self.stopping = False
         if self.engine_lock is not None:
             self.engine_lock.close()
             self.engine_lock = None
         return {'stopped': True}
+
+    def processes(self):
+        """(pid, ppid, command) for every process, from ps."""
+        output = subprocess.run(['ps', '-axo', 'pid=,ppid=,command='], capture_output=True, text=True, check=False).stdout
+        result = []
+        for line in output.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                result.append((int(parts[0]), int(parts[1]), parts[2]))
+        return result
+
+    def mount_workers(self, mounts):
+        mountpoints = [item['path'] for item in mounts if item['mounted']]
+        return [(pid, ppid, command) for pid, ppid, command in self.processes()
+                if any(f'--mountpoint {mountpoint}' in command for mountpoint in mountpoints)]
+
+    def stranded(self, mounts):
+        """Mounted scenery with no live engine behind it: every worker serving it is orphaned (or gone)."""
+        with self.lock:
+            if self.process is not None and self.process.poll() is None:
+                return False
+        if not any(item['mounted'] for item in mounts):
+            return False
+        return all(ppid == 1 for _, ppid, _ in self.mount_workers(mounts))
+
+    def cleanup(self):
+        """Unmount scenery a stopped engine left behind and end its orphaned processes."""
+        mounts = self.mounts()
+        if not self.stranded(mounts):
+            if any(item['mounted'] for item in mounts):
+                raise ValueError('Another AutoOrtho instance is serving this scenery. Stop it there.')
+            return self.snapshot()
+        # Orphaned workers unmount on SIGTERM; give them the graceful path first.
+        for pid, _, _ in self.mount_workers(mounts):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and any(item['mounted'] for item in self.mounts()):
+            time.sleep(0.5)
+        for item in self.mounts():
+            if item['mounted']:
+                subprocess.run(['diskutil', 'unmount', 'force', item['path']], capture_output=True, check=False)
+        # The engine's multiprocessing helpers outlive it the same way.
+        for pid, ppid, command in self.processes():
+            if ppid == 1 and command.startswith(str(self.executable)) and (
+                    '--multiprocessing-fork' in command or 'multiprocessing.resource_tracker' in command):
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGTERM)
+        if any(item['mounted'] for item in self.mounts()):
+            raise ValueError('Scenery is still mounted. Eject it in Finder, then try again.')
+        return self.snapshot()
 
     def save(self, params):
         with self.lock:
@@ -474,6 +544,8 @@ class NativeService:
             return self.logs(params)
         if method == 'catalog':
             return self.refresh_catalog()
+        if method == 'cleanup':
+            return self.cleanup()
         if method == 'tasks.clear':
             return self.prune_tasks(keep=0)
         if method == 'scenery':

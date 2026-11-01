@@ -96,6 +96,8 @@ def test_external_edit_rejects_stale_save(setup):
 def test_external_mounts_are_not_owned_or_stopped(setup, monkeypatch):
     _, service = setup
     monkeypatch.setattr(native.os.path, 'ismount', lambda path: str(path).endswith('z_ao_asi'))
+    # Another app's engine: its worker has a live parent.
+    monkeypatch.setattr(service, 'processes', lambda: [(500, 400, f"engine --mountpoint {m['path']}") for m in service.mounts()])
     assert service.snapshot()['status'] == 'streaming'
     assert not service.snapshot()['owned']
     assert service.stop() == {'stopped': True}
@@ -224,3 +226,34 @@ def test_update_installs_the_latest_release(setup, monkeypatch):
     service.pool.shutdown(wait=True)
     assert calls == ['latest']
     assert service.tasks[task]['state'] == 'complete' and service.tasks[task]['name'] == 'Asia'
+
+
+def test_orphaned_mount_is_stranded_and_cleaned_up(setup, monkeypatch):
+    _, service = setup
+    mounted = {'value': True}
+    monkeypatch.setattr(native.os.path, 'ismount', lambda path: mounted['value'] and str(path).endswith('z_ao_asi'))
+    path = service.mounts()[0]['path']
+    monkeypatch.setattr(service, 'processes', lambda: [(700, 1, f'/engine --mountpoint {path}'),
+                                                       (701, 1, '/not/launched --multiprocessing-fork tracker_fd=11')])
+    assert service.snapshot()['status'] == 'stranded'
+    killed = []
+    def kill(pid, sig):
+        killed.append(pid)
+        if pid == 700:
+            mounted['value'] = False  # The worker unmounts on SIGTERM.
+    monkeypatch.setattr(native.os, 'kill', kill)
+    assert service.dispatch('cleanup', {})['status'] == 'stopped'
+    assert killed == [700, 701]
+
+
+def test_repeated_stop_signals_the_engine_once(setup):
+    _, service = setup
+    events = []
+    class Engine:
+        def poll(self): return None if 'waited' not in events else 0
+        def terminate(self): events.append('terminate')
+        def wait(self, timeout): events.append('waited')
+    service.process = Engine()
+    service.stopping = True  # A first stop is already in progress.
+    service.stop()
+    assert events == ['waited']
