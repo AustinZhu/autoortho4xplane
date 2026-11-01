@@ -61,8 +61,9 @@ Command-5 navigate (View menu); Command-comma opens Settings. Command-S applies
 settings within that window. The menu-bar item shows status and can start or
 stop streaming after the main window closes. Stopping or quitting asks for
 confirmation only while X-Plane is open.
-Quitting waits for graceful engine shutdown; an unmount timeout never
-force-kills it.
+Quitting waits for graceful engine shutdown, and the engine is never
+force-quit while scenery is mounted. If it is still running 20 s after all
+scenery has unmounted, it is hung and is ended along with its child processes.
 
 Read-only refresh does not load the configuration-writing engine modules.
 Saving changes preserves comments and unrelated settings, rejects stale edits

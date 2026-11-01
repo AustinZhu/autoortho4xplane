@@ -287,10 +287,7 @@ class NativeService:
             if process.poll() is None:
                 if signal_engine:
                     process.terminate()
-                try:
-                    process.wait(timeout=120)
-                except subprocess.TimeoutExpired:
-                    raise ValueError('The engine is still unmounting. It has not been force-quit.') from None
+                self.wait_for_engine(process)
             if any(item['mounted'] for item in self.mounts()):
                 self.cleanup()
         finally:
@@ -301,6 +298,41 @@ class NativeService:
             self.engine_lock.close()
             self.engine_lock = None
         return {'stopped': True}
+
+    def wait_for_engine(self, process, timeout=120, settle=20):
+        """Wait for the engine to exit. It is never force-quit while scenery is mounted; once
+        everything is unmounted, a process still alive after `settle` seconds is hung and is
+        killed along with its children."""
+        deadline = time.monotonic() + timeout
+        unmounted_since = None
+        while process.poll() is None:
+            now = time.monotonic()
+            if any(item['mounted'] for item in self.mounts()):
+                unmounted_since = None
+            else:
+                unmounted_since = unmounted_since or now
+                if now - unmounted_since >= settle:
+                    self.kill_tree(process.pid)
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=5)
+                    return
+            if now > deadline:
+                raise ValueError('The engine is still unmounting. It has not been force-quit.')
+            time.sleep(0.5)
+
+    def kill_tree(self, pid):
+        """SIGKILL a process and all of its descendants, children first."""
+        children = {}
+        for child, parent, _ in self.processes():
+            children.setdefault(parent, []).append(child)
+        order, stack = [], [pid]
+        while stack:
+            current = stack.pop()
+            order.append(current)
+            stack.extend(children.get(current, []))
+        for target in reversed(order):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(target, signal.SIGKILL)
 
     def processes(self):
         """(pid, ppid, command) for every process, from ps."""

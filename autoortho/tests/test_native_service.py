@@ -118,13 +118,19 @@ def test_failed_engine_is_not_reported_as_streaming(setup):
     assert service.snapshot()['status'] == 'failed'
 
 
-def test_unmount_timeout_does_not_force_kill_engine(setup):
+def test_unmount_timeout_does_not_force_kill_engine(setup, monkeypatch):
     _, service = setup
+    # Scenery stays mounted for the whole wait, so the engine must not be killed.
+    monkeypatch.setattr(native.os.path, 'ismount', lambda path: str(path).endswith('z_ao_asi'))
+    clock = iter(range(0, 10_000, 10))
+    monkeypatch.setattr(native.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(native.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(native.os, 'kill', lambda pid, sig: pytest.fail('engine was killed while mounted'))
     class Process:
+        pid = 900
         terminated = False
         def poll(self): return None
         def terminate(self): self.terminated = True
-        def wait(self, timeout): raise native.subprocess.TimeoutExpired('engine', timeout)
     service.process = Process()
     with pytest.raises(ValueError, match='not been force-quit'):
         service.stop()
@@ -247,13 +253,13 @@ def test_orphaned_mount_is_stranded_and_cleaned_up(setup, monkeypatch):
     assert killed == [700, 701]
 
 
-def test_repeated_stop_signals_the_engine_once(setup):
+def test_repeated_stop_signals_the_engine_once(setup, monkeypatch):
     _, service = setup
     events = []
     class Engine:
         def poll(self): return None if 'waited' not in events else 0
         def terminate(self): events.append('terminate')
-        def wait(self, timeout): events.append('waited')
+    monkeypatch.setattr(service, 'wait_for_engine', lambda process: events.append('waited'))
     service.process = Engine()
     service.stopping = True  # A first stop is already in progress.
     service.stop()
@@ -272,3 +278,25 @@ def test_orphaned_processes_without_mounts_are_cleaned_up(setup, monkeypatch):
     service.cleanup()
     # Only our engine's orphans: never another app's processes or ones with a live parent.
     assert killed == [800, 801]
+
+
+def test_hung_engine_is_killed_only_after_scenery_unmounts(setup, monkeypatch):
+    _, service = setup
+    mounted = {'value': True}
+    monkeypatch.setattr(native.os.path, 'ismount', lambda path: mounted['value'] and str(path).endswith('z_ao_asi'))
+    monkeypatch.setattr(service, 'processes', lambda: [(900, 1, 'engine'), (901, 900, 'fork child'), (902, 901, 'grandchild')])
+    killed = []
+    monkeypatch.setattr(native.os, 'kill', lambda pid, sig: killed.append((pid, sig)))
+    polls = {'count': 0}
+    class Engine:
+        pid = 900
+        def poll(self):
+            polls['count'] += 1
+            if polls['count'] == 3:
+                mounted['value'] = False  # The engine unmounted, then hung.
+            return None if not killed else -9
+        def wait(self, timeout): pass
+    monkeypatch.setattr(native.time, 'sleep', lambda seconds: None)
+    service.wait_for_engine(Engine(), timeout=60, settle=0)
+    assert [pid for pid, _ in killed] == [902, 901, 900]
+    assert polls['count'] >= 3  # Never killed while scenery was still mounted.
