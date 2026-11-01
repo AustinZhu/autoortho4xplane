@@ -336,6 +336,10 @@ struct ActivityView: View {
                     }
                 }.padding(.vertical, 10)
             }
+            .toolbar {
+                Button { Task { await model.clearFinishedTasks() } } label: { Label("Clear Finished", systemImage: "trash") }
+                    .disabled(!model.hasFinishedTasks).help("Remove finished and failed operations from this list")
+            }
         }
     }
     func icon(_ task: EngineTask) -> String {

@@ -32,6 +32,7 @@ struct SceneryMount: Codable, Identifiable {
 struct EngineTask: Codable, Identifiable {
     let id: String
     let region: String
+    let name: String
     let action: String
     let state: String
     let message: String
@@ -100,6 +101,26 @@ enum SceneryAction: String {
         case .restore: return "Restoring terrain for"
         case .roughness: return "Reducing reflections for"
         case .restore_roughness: return "Restoring reflections for"
+        }
+    }
+    var doneTitle: String {
+        switch self {
+        case .install: return "Installed"
+        case .uninstall: return "Removed"
+        case .seasons: return "Applied seasons to"
+        case .restore: return "Restored terrain for"
+        case .roughness: return "Reduced reflections for"
+        case .restore_roughness: return "Restored reflections for"
+        }
+    }
+    var failedTitle: String {
+        switch self {
+        case .install: return "Couldn’t install"
+        case .uninstall: return "Couldn’t remove"
+        case .seasons: return "Couldn’t apply seasons to"
+        case .restore: return "Couldn’t restore terrain for"
+        case .roughness: return "Couldn’t reduce reflections for"
+        case .restore_roughness: return "Couldn’t restore reflections for"
         }
     }
     var message: String {

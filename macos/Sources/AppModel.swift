@@ -98,11 +98,16 @@ final class AppModel: ObservableObject {
         let id = name.hasPrefix("z_ao_") ? String(name.dropFirst(5)) : name
         return (snapshot?.regions ?? []).first { $0.id == id }?.name ?? (snapshot?.catalog ?? []).first { $0.id == id }?.name ?? name
     }
+    /// "Installing Europe", "Installed Europe" or "Couldn’t install Europe", depending on the task's state.
     func taskTitle(_ task: EngineTask) -> String {
-        let name = (snapshot?.catalog ?? []).first { $0.id == task.region }?.name
-            ?? (snapshot?.regions ?? []).first { $0.id == task.region }?.name ?? task.region
-        return "\(SceneryAction(rawValue: task.action)?.progressTitle ?? task.action.capitalized) \(name)"
+        guard let action = SceneryAction(rawValue: task.action) else { return "\(task.action.capitalized) \(task.name)" }
+        switch task.state {
+        case "complete": return "\(action.doneTitle) \(task.name)"
+        case "failed": return "\(action.failedTitle) \(task.name)"
+        default: return "\(action.progressTitle) \(task.name)"
+        }
     }
+    var hasFinishedTasks: Bool { tasks.contains { $0.state != "running" } }
 
     func begin() {
         guard !started else { return }; started = true
@@ -204,6 +209,11 @@ final class AppModel: ObservableObject {
     }
     func scenery(_ region: Region, action: SceneryAction) async {
         do { _ = try await bridge.request("scenery", ["region": region.id, "action": action.rawValue]); await refresh() }
+        catch { self.error = error.localizedDescription }
+    }
+
+    func clearFinishedTasks() async {
+        do { _ = try await bridge.request("tasks.clear"); await refresh() }
         catch { self.error = error.localizedDescription }
     }
 
