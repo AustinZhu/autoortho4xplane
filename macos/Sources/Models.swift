@@ -58,6 +58,7 @@ struct Snapshot: Codable {
     let logPath: String
     let reportsPath: String
     let port: Int
+    let engineExit: Int?
 }
 struct RoutePoint: Identifiable {
     let id: String

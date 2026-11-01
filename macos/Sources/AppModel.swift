@@ -2,6 +2,13 @@ import SwiftUI
 import AppKit
 import MapKit
 
+/// Why streaming can't start right now, and the one action that resolves it.
+struct StartBlocker {
+    enum Fix { case applySettings, chooseXPlane, manageScenery, waitForTasks, none }
+    let message: String
+    let fix: Fix
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
@@ -10,6 +17,7 @@ final class AppModel: ObservableObject {
     @Published var destination: Destination? = .overview
     @Published var error: String?
     @Published var busy = false
+    @Published var transition: String?
     @Published var loadingCatalog = false
     @Published var logs = ""
     @Published var search = ""
@@ -28,8 +36,10 @@ final class AppModel: ObservableObject {
     private var polling: Task<Void, Never>?
     private var hadStreaming = false
     var running: Bool { ["streaming", "starting"].contains(snapshot?.status ?? "") }
+    var ownsStreaming: Bool { snapshot?.owned == true }
     var hasRunningTask: Bool { snapshot?.tasks.contains { $0.state == "running" } ?? false }
     var statusTitle: String {
+        if let transition { return transition }
         switch snapshot?.status {
         case "streaming": return "Streaming scenery"
         case "starting": return "Starting streaming…"
@@ -37,6 +47,38 @@ final class AppModel: ObservableObject {
         default: return snapshot?.ready == true ? "Ready to fly" : "Finish setting up"
         }
     }
+    var statusDetail: String {
+        switch snapshot?.status {
+        case "streaming":
+            return ownsStreaming ? "Satellite scenery is available to X-Plane." : "Streaming is managed by another AutoOrtho instance."
+        case "starting": return "Mounting scenery for X-Plane. This can take a minute."
+        case "failed":
+            let code = snapshot?.engineExit.map { " (exit code \($0))" } ?? ""
+            return "The streaming engine exited\(code). The log shows what happened."
+        default: return "Start streaming before opening your X-Plane flight."
+        }
+    }
+    var mountSummary: String {
+        let mounts = snapshot?.mounts ?? []
+        let mounted = mounts.filter(\.mounted).count
+        return mounts.isEmpty ? "No regions installed" : "\(mounted) of \(mounts.count) regions mounted"
+    }
+    var startBlocker: StartBlocker? {
+        guard let snapshot else { return .init(message: "Connecting to the streaming engine…", fix: .none) }
+        if let check = snapshot.checks.first(where: { !$0.ok }) {
+            switch check.id {
+            case "xplane": return .init(message: "Choose your X-Plane folder.", fix: .chooseXPlane)
+            case "scenery": return .init(message: "Install at least one scenery region.", fix: .manageScenery)
+            case "storage": return .init(message: "Free up disk space. AutoOrtho needs at least 2 GB.", fix: .none)
+            default: return .init(message: "\(check.title): \(check.detail)", fix: .none)
+            }
+        }
+        if hasRunningTask { return .init(message: "Wait for the scenery operation to finish.", fix: .waitForTasks) }
+        if !edits.isEmpty { return .init(message: "You have unapplied settings.", fix: .applySettings) }
+        return nil
+    }
+    var canStart: Bool { !running && !busy && startBlocker == nil }
+    var canStop: Bool { running && !busy && ownsStreaming }
     var regions: [Region] {
         var items = Dictionary(uniqueKeysWithValues: (snapshot?.catalog ?? []).map { ($0.id, $0) })
         for region in snapshot?.regions ?? [] { items[region.id] = region }
@@ -81,23 +123,47 @@ final class AppModel: ObservableObject {
         else { edits[id] = value }
     }
     func revert() { edits.removeAll(); editRevision = nil }
-    func save() async {
-        guard !edits.isEmpty, let revision = editRevision else { return }
+    @discardableResult
+    func save() async -> Bool {
+        guard !edits.isEmpty, let revision = editRevision else { return true }
         busy = true; defer { busy = false }
         do {
             let data = try await bridge.request("settings.save", ["changes": edits, "revision": revision])
             snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
             revert()
-        } catch { self.error = error.localizedDescription }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+    func applyAndStart() async {
+        if await save() { await streaming(true) }
+    }
+
+    // MARK: Streaming
+    func toggleStreaming() {
+        if running { requestStop() } else { Task { await streaming(true) } }
+    }
+    /// Confirms with an app-modal alert so every entry point (window, menu, menu bar) behaves the same.
+    func requestStop() {
+        guard canStop else { return }
+        let alert = NSAlert()
+        alert.messageText = "Stop streaming?"
+        alert.informativeText = "Close your X-Plane flight first. Stopping unmounts the scenery it uses."
+        alert.addButton(withTitle: "Keep Streaming")
+        let stop = alert.addButton(withTitle: "Stop Streaming")
+        stop.hasDestructiveAction = true
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn { Task { await streaming(false) } }
     }
     func streaming(_ start: Bool) async {
-        busy = true; defer { busy = false }
+        if start, let blocker = startBlocker { error = blocker.message; return }
+        busy = true; transition = start ? "Starting streaming…" : "Stopping streaming…"
+        defer { busy = false; transition = nil }
         do {
-            if start && !edits.isEmpty { throw BridgeError.message("Apply or revert your settings before starting streaming.") }
             _ = try await bridge.request(start ? "streaming.start" : "streaming.stop")
             await refresh()
         } catch { self.error = error.localizedDescription }
     }
+
     func catalog() async {
         loadingCatalog = true; defer { loadingCatalog = false }
         do { _ = try await bridge.request("catalog"); await refresh() }
@@ -155,11 +221,15 @@ final class AppModel: ObservableObject {
               (-90...90).contains(lat), (-180...180).contains(lon), lat != 0 || lon != 0 else { return }
         aircraft = .init(latitude: lat, longitude: lon)
     }
-    func chooseDirectory(_ id: String) {
+    func chooseDirectory(_ id: String, applyNow: Bool = false) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.canCreateDirectories = true; panel.prompt = "Choose"
         panel.directoryURL = URL(fileURLWithPath: NSString(string: setting(id)).expandingTildeInPath)
-        if panel.runModal() == .OK, let url = panel.url { edit(id, url.path) }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // Apply immediately only when this is the sole change, so other pending edits aren't saved silently.
+        let applies = applyNow && edits.isEmpty
+        edit(id, url.path)
+        if applies { Task { await save() } }
     }
     func reveal(_ path: String) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     func showReport(_ report: Report) {

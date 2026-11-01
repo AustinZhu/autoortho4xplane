@@ -31,6 +31,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
+/// The single Start/Stop command, shared by the Streaming menu and the menu bar extra.
+struct StreamingCommandButton: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        Button(model.running ? "Stop Streaming…" : "Start Streaming") { model.toggleStreaming() }
+            .disabled(model.running ? !model.canStop : !model.canStart)
+    }
+}
+
 @main
 struct AutoOrthoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -51,26 +60,37 @@ struct AutoOrthoApp: App {
                     ])
                 }
             }
-            CommandMenu("Navigate") {
+            CommandMenu("Streaming") {
+                StreamingCommandButton(model: model).keyboardShortcut(.return, modifiers: .command)
+                Divider()
+                Button("Refresh Status") { Task { await model.refresh() } }.keyboardShortcut("r", modifiers: .command)
+            }
+            CommandGroup(before: .sidebar) {
                 ForEach(Array(Destination.allCases.enumerated()), id: \.element.id) { index, destination in
-                    Button(destination.rawValue) { model.destination = destination }
+                    Button(destination.rawValue) { openWindow(id: "main"); model.destination = destination }
                         .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                 }
-            }
-            CommandGroup(after: .toolbar) {
-                Button("Refresh") { Task { await model.refresh() } }.keyboardShortcut("r", modifiers: .command)
+                Divider()
             }
             CommandGroup(replacing: .help) {
                 Link("AutoOrtho Help", destination: URL(string: "https://github.com/AustinZhu/autoortho4xplane")!)
             }
         }
         Settings { NativeSettingsView().environmentObject(model) }
-        MenuBarExtra("AutoOrtho", systemImage: "airplane.circle") {
+        MenuBarExtra {
             Text(model.statusTitle)
+            Text(model.mountSummary)
+            if !model.running, let blocker = model.startBlocker { Text(blocker.message) }
+            Divider()
+            StreamingCommandButton(model: model)
+            Divider()
             Button("Show AutoOrtho") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
             SettingsLink { Text("Settings…") }
             Divider()
             Button("Quit AutoOrtho") { NSApp.terminate(nil) }.keyboardShortcut("q")
+        } label: {
+            Image(systemName: model.running ? "airplane.circle.fill" : "airplane.circle")
+                .accessibilityLabel(model.statusTitle)
         }
     }
 }

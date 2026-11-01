@@ -23,3 +23,4 @@ logs/
 autoortho/aopipeline/libaopipeline.dylib
 ao_*.txt
 xp_*.txt
+macos/.build/

@@ -8,21 +8,13 @@ typealias NativeState<Value> = SwiftUI.State<Value>
 
 struct RootView: View {
     @EnvironmentObject var model: AppModel
-    @NativeState<Bool> private var confirmStop = false
     var body: some View {
         NavigationSplitView {
             List(Destination.allCases, selection: $model.destination) { destination in
                 Label(destination.rawValue, systemImage: destination.symbol).tag(destination)
             }
             .navigationSplitViewColumnWidth(min: 175, ideal: 210, max: 260)
-            .safeAreaInset(edge: .bottom) {
-                HStack(spacing: 8) {
-                    Image(systemName: model.running ? "antenna.radiowaves.left.and.right" : "airplane")
-                        .foregroundStyle(model.running ? .green : .secondary)
-                    Text(model.running ? "Streaming" : "Not streaming").font(.callout)
-                    Spacer()
-                }.padding().accessibilityElement(children: .combine)
-            }
+            .safeAreaInset(edge: .bottom) { StatusFooter() }
         } detail: {
             Group {
                 switch model.destination ?? .overview {
@@ -35,25 +27,11 @@ struct RootView: View {
             }
             .navigationTitle((model.destination ?? .overview).rawValue)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        if model.running { confirmStop = true }
-                        else { Task { await model.streaming(true) } }
-                    } label: {
-                        Label(model.running ? "Stop Streaming" : "Start Streaming", systemImage: model.running ? "stop.fill" : "play.fill")
-                    }
-                    .disabled(model.busy || model.snapshot == nil || (model.running && model.snapshot?.owned != true) ||
-                              (!model.running && (model.snapshot?.ready != true || model.hasRunningTask)))
-                    .help(model.running ? "Unmount scenery and stop streaming" : "Mount installed scenery for X-Plane")
-                }
+                ToolbarItem(placement: .primaryAction) { StreamingToolbarButton() }
             }
         }
         .frame(minWidth: 850, minHeight: 600)
         .task { model.begin() }
-        .alert("Stop streaming?", isPresented: $confirmStop) {
-            Button("Keep Streaming", role: .cancel) { }
-            Button("Stop Streaming", role: .destructive) { Task { await model.streaming(false) } }
-        } message: { Text("Close your X-Plane flight first. Stopping unmounts the scenery it uses.") }
         .alert("AutoOrtho", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -70,6 +48,42 @@ struct RootView: View {
     }
 }
 
+struct StatusFooter: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: model.running ? "antenna.radiowaves.left.and.right" : "airplane")
+                .foregroundStyle(model.running ? .green : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.running ? "Streaming" : "Not streaming").font(.callout)
+                Text(model.mountSummary).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }.padding().accessibilityElement(children: .combine)
+    }
+}
+
+struct StreamingToolbarButton: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        Button { model.toggleStreaming() } label: {
+            if let transition = model.transition {
+                Label(transition, systemImage: "hourglass")
+            } else {
+                Label(model.running ? "Stop Streaming" : "Start Streaming", systemImage: model.running ? "stop.fill" : "play.fill")
+            }
+        }
+        .disabled(model.running ? !model.canStop : !model.canStart)
+        .help(help)
+    }
+    var help: String {
+        if model.running { return model.ownsStreaming ? "Unmount scenery and stop streaming (⌘↩)" : "Streaming is managed by another AutoOrtho instance." }
+        return model.startBlocker?.message ?? "Mount installed scenery for X-Plane (⌘↩)"
+    }
+}
+
+// MARK: - Overview
+
 struct OverviewView: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
@@ -80,22 +94,21 @@ struct OverviewView: View {
                         .font(.system(size: 42)).foregroundStyle(.tint).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
                         Text(model.statusTitle).font(.title2.weight(.semibold))
-                        Text(model.running ? "Satellite scenery is available to X-Plane." : "Start streaming before opening your X-Plane flight.")
-                            .foregroundStyle(.secondary)
+                        Text(model.statusDetail).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if model.busy { ProgressView().controlSize(.small) }
-                }.padding(.vertical, 8)
-                if model.snapshot?.status == "streaming" && model.snapshot?.owned == false {
-                    Label("Streaming is managed by another AutoOrtho instance.", systemImage: "info.circle")
-                }
+                }.padding(.top, 8)
+                StreamingControls().padding(.bottom, 8)
             }
             Section("Setup") {
                 ForEach(model.snapshot?.checks ?? []) { check in
                     LabeledContent {
-                        Image(systemName: check.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
-                            .foregroundStyle(check.ok ? .green : .orange)
-                            .accessibilityLabel(check.ok ? "Ready" : "Needs attention")
+                        HStack(spacing: 10) {
+                            if !check.ok { fixButton(for: check) }
+                            Image(systemName: check.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                                .foregroundStyle(check.ok ? .green : .orange)
+                                .accessibilityLabel(check.ok ? "Ready" : "Needs attention")
+                        }
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(check.title)
@@ -118,6 +131,56 @@ struct OverviewView: View {
                 LabeledContent("Memory cache limit", value: "\(model.setting("cache.cache_mem_limit")) GB")
             }
         }.formStyle(.grouped)
+    }
+    @ViewBuilder func fixButton(for check: ReadinessCheck) -> some View {
+        switch check.id {
+        case "xplane": Button("Choose…") { model.chooseDirectory("paths.xplane_path", applyNow: true) }.disabled(model.running)
+        case "scenery": Button("Add Scenery…") { model.destination = .scenery }
+        default: EmptyView()
+        }
+    }
+}
+
+/// The primary Start/Stop control, with the reason it is unavailable and the action that resolves it.
+struct StreamingControls: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                primary
+                if model.transition != nil || model.snapshot?.status == "starting" { ProgressView().controlSize(.small) }
+                if model.snapshot?.status == "failed" {
+                    Button("View Log") { model.destination = .diagnostics }.controlSize(.large)
+                }
+            }
+            if !model.running, model.transition == nil, model.snapshot != nil, let blocker = model.startBlocker {
+                HStack(spacing: 8) {
+                    Label(blocker.message, systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
+                    fix(blocker.fix)
+                }.font(.callout)
+            }
+        }
+    }
+    @ViewBuilder var primary: some View {
+        if model.running {
+            Button { model.requestStop() } label: { Label(model.transition ?? "Stop Streaming…", systemImage: "stop.fill") }
+                .controlSize(.large).disabled(!model.canStop)
+        } else if model.startBlocker?.fix == .applySettings {
+            Button { Task { await model.applyAndStart() } } label: { Label("Apply Settings and Start", systemImage: "play.fill") }
+                .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
+        } else {
+            Button { Task { await model.streaming(true) } } label: { Label(model.transition ?? "Start Streaming", systemImage: "play.fill") }
+                .buttonStyle(.borderedProminent).controlSize(.large).disabled(!model.canStart)
+        }
+    }
+    @ViewBuilder func fix(_ fix: StartBlocker.Fix) -> some View {
+        switch fix {
+        case .applySettings: SettingsLink { Text("Review Settings…") }.buttonStyle(.link)
+        case .chooseXPlane: Button("Choose X-Plane Folder…") { model.chooseDirectory("paths.xplane_path", applyNow: true) }.buttonStyle(.link)
+        case .manageScenery: Button("Add Scenery…") { model.destination = .scenery }.buttonStyle(.link)
+        case .waitForTasks: Button("Show Activity") { model.destination = .activity }.buttonStyle(.link)
+        case .none: EmptyView()
+        }
     }
 }
 
