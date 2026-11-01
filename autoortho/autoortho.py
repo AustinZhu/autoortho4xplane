@@ -1067,6 +1067,10 @@ class AOMount:
             self.mounts_running = False
             log.info(f"Exiting due to {err}")
         finally:
+            # A repeated stop request (e.g. Stop, then Quit) must not interrupt
+            # cleanup: that would skip the force unmount and orphan the mount
+            # workers, leaving scenery mounted with no engine.
+            _ignore_stop_signals()
             log.info("Shutting down ...")
             self.unmount_sceneries()
         return healthy
@@ -1093,14 +1097,19 @@ class AOMount:
                 if scenery.get('mount')
             ]
 
-        for mountpoint in mountpoints:
-            self.unmount(
-                mountpoint,
-                force=force,
-                wait_timeout=DEFAULT_WORKER_STOP_TIMEOUT,
-            )
-
-        self.stop_mount_workers(timeout=DEFAULT_WORKER_STOP_TIMEOUT)
+        try:
+            for mountpoint in mountpoints:
+                try:
+                    self.unmount(
+                        mountpoint,
+                        force=force,
+                        wait_timeout=DEFAULT_WORKER_STOP_TIMEOUT,
+                    )
+                except Exception as exc:
+                    log.error(f"Unmount of {mountpoint} failed: {exc}")
+        finally:
+            # Workers must stop even if an unmount fails, or they outlive the engine.
+            self.stop_mount_workers(timeout=DEFAULT_WORKER_STOP_TIMEOUT)
         self.stop_download_broker()
 
         remaining_mounts = [
@@ -1185,6 +1194,18 @@ class AOMountUI(AOMount, config_ui.ConfigUI):
     def unmount_sceneries(self, force=False):
         """Unmount sceneries using AOMount functionality"""
         return AOMount.unmount_sceneries(self, force=force)
+
+
+def _ignore_stop_signals():
+    """Ignore further SIGTERM/SIGINT while shutdown cleanup runs."""
+    for name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass  # Not the main thread, or unsupported on this platform.
 
 
 def main():

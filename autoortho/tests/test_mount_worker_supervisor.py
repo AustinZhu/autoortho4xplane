@@ -349,6 +349,43 @@ def test_unmount_sceneries_unmounts_before_stopping_workers():
     assert calls[1] == ("stop_workers", 8.0)
 
 
+def test_failed_unmount_still_stops_workers():
+    import importlib
+    autoortho_mod = importlib.import_module("autoortho")
+
+    aom = autoortho_mod.AOMount.__new__(autoortho_mod.AOMount)
+    aom.cfg = SimpleNamespace(scenery_mounts=[])
+    aom._active_mountpoints = ["/tmp/ao-a", "/tmp/ao-b"]
+    aom.mounts_running = True
+    calls = []
+
+    def fake_unmount(mountpoint, force=False, wait_timeout=None):
+        calls.append(("unmount", mountpoint))
+        if mountpoint == "/tmp/ao-a":
+            raise OSError("mount busy")
+        return True
+
+    aom.unmount = fake_unmount
+    aom.stop_mount_workers = lambda timeout=None: calls.append(("stop_workers",))
+    aom.stop_reporter = lambda: None
+    aom.stop_stats_manager = lambda: None
+    aom.stop_log_server = lambda: None
+
+    autoortho_mod.AOMount.unmount_sceneries(aom)
+
+    assert calls == [("unmount", "/tmp/ao-a"), ("unmount", "/tmp/ao-b"), ("stop_workers",)]
+
+
+def test_stop_signals_are_ignored_during_shutdown(monkeypatch):
+    import importlib
+    import signal as signal_mod
+    autoortho_mod = importlib.import_module("autoortho")
+    installed = {}
+    monkeypatch.setattr(autoortho_mod.signal, "signal", lambda sig, handler: installed.update({sig: handler}))
+    autoortho_mod._ignore_stop_signals()
+    assert installed == {signal_mod.SIGTERM: signal_mod.SIG_IGN, signal_mod.SIGINT: signal_mod.SIG_IGN}
+
+
 def test_unmount_success_is_checked_after_workers_stop(monkeypatch):
     import importlib
     autoortho_mod = importlib.import_module("autoortho")

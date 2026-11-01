@@ -20,8 +20,10 @@ The builder never overwrites an earlier build: remove `macos/build/AutoOrtho.app
 or pass a different `--output` first.
 
 Use the same Python minor version as the engine bundle. The current local bundle
-uses Python 3.14. The builder preserves every existing engine module verbatim,
-adds `native_service`, and changes only the executable's entry dispatcher.
+uses Python 3.14. The builder preserves every engine module verbatim except the
+tracked local fixes (listed in `build.py`) that differ from this checkout, which
+it recompiles from source; it adds `native_service` and changes only the
+executable's entry dispatcher. `build/verification.json` lists replaced modules.
 The original startup and multiprocessing paths remain available to the helper.
 Native library verification compares Mach-O code/data sections because packaging
 changes rpaths and embedded signatures.

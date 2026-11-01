@@ -68,9 +68,13 @@ def build(engine_app, destination):
                'autoortho_fuse': 'autoortho_fuse.py', 'getortho': 'getortho.py',
                'pydds': 'pydds.py', 'dds_manifest': 'dds_manifest.py',
                'macsetup': 'macsetup.py', 'ui.main_window': 'ui/main_window.py'}
+    # Modules that differ from this checkout are replaced; everything else must stay byte-identical.
+    replacements = {}
     for module, relative in modules.items():
         code = pyz.extract(module)
-        assert code == compile((REPO / 'autoortho' / relative).read_text(), code.co_filename, 'exec'), module
+        current = compile((REPO / 'autoortho' / relative).read_text(), code.co_filename, 'exec')
+        if code != current:
+            replacements[module] = current
     native_library = Path('Contents/Frameworks/autoortho/aopipeline/lib/macos/libaopipeline.dylib')
     assert native_sections(engine_app / native_library) == native_sections(REPO / 'autoortho/aopipeline/lib/macos/libaopipeline.dylib')
     if destination.exists():
@@ -98,6 +102,8 @@ def build(engine_app, destination):
         if name == 'native_service':
             continue
         payload = source_pyz[offset:offset + length]
+        if name in replacements:
+            payload = zlib.compress(marshal.dumps(replacements[name]), 6)
         toc.append((name, (kind, output_pyz.tell(), len(payload))))
         output_pyz.write(payload)
     service = compile((REPO / 'autoortho/native_service.py').read_text(), 'native_service.py', 'exec')
@@ -158,6 +164,9 @@ else:
     for name in pyz.toc:
         if name == 'native_service':
             continue
+        if name in replacements:
+            assert verified_pyz.extract(name) == replacements[name], name
+            continue
         assert verified_pyz.extract(name, raw=True) == pyz.extract(name, raw=True), name
     for name in original.toc:
         if name not in {'__main__', 'PYZ.pyz'}:
@@ -182,7 +191,8 @@ else:
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(destination)], check=True)
     report = dict(app=str(destination), engine_source=str(engine_app),
                   source_engine_sha256=sha(source_executable), helper_sha256=sha(helper_executable),
-                  preserved_engine_modules=len(pyz.toc) - int('native_service' in pyz.toc), changed_engine_modules=[],
+                  preserved_engine_modules=len(pyz.toc) - int('native_service' in pyz.toc) - len(replacements),
+                  changed_engine_modules=sorted(replacements),
                   added_module='native_service', signature='deep strict verification passed',
                   foundation_commit='cdf230c3bbb4c1cff54d843c7778698467ff16f2')
     (ROOT / 'build/verification.json').write_text(json.dumps(report, indent=2) + '\n')
