@@ -100,11 +100,17 @@ final class AppModel: ObservableObject {
     var allRegions: [Region] {
         let installed = Dictionary(uniqueKeysWithValues: (snapshot?.regions ?? []).map { ($0.id, $0) })
         var items = installed
-        for region in snapshot?.catalog ?? [] where installed[region.id] == nil {
-            items[region.id] = Region(id: region.id, name: region.name, version: region.version, bytes: region.bytes, installed: false)
+        for region in snapshot?.catalog ?? [] {
+            if var local = installed[region.id] {
+                local.latestVersion = region.version
+                items[region.id] = local
+            } else {
+                items[region.id] = Region(id: region.id, name: region.name, version: region.version, bytes: region.bytes, installed: false)
+            }
         }
         return items.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
+    var updateCount: Int { allRegions.filter(\.updateAvailable).count }
     var regions: [Region] {
         allRegions.filter { sceneryQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(sceneryQuery) }
     }

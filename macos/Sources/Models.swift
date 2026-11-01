@@ -22,6 +22,12 @@ struct Region: Codable, Identifiable {
     let version: String
     let bytes: Int64
     let installed: Bool
+    /// The catalog's newest release, set for installed regions when the catalog is loaded.
+    var latestVersion: String? = nil
+    var updateAvailable: Bool {
+        guard installed, let latestVersion else { return false }
+        return latestVersion.compare(version, options: .numeric) == .orderedDescending
+    }
 }
 struct SceneryMount: Codable, Identifiable {
     var id: String { path }
@@ -82,10 +88,11 @@ enum Destination: String, CaseIterable, Identifiable {
 
 /// User-facing names for scenery operations, shared by menus, dialogs and Activity.
 enum SceneryAction: String {
-    case install, uninstall, seasons, restore, roughness, restore_roughness
+    case install, update, uninstall, seasons, restore, roughness, restore_roughness
     var title: String {
         switch self {
         case .install: return "Install"
+        case .update: return "Update"
         case .uninstall: return "Remove"
         case .seasons: return "Apply Seasons"
         case .restore: return "Restore Original Terrain"
@@ -96,6 +103,7 @@ enum SceneryAction: String {
     var progressTitle: String {
         switch self {
         case .install: return "Installing"
+        case .update: return "Updating"
         case .uninstall: return "Removing"
         case .seasons: return "Applying seasons to"
         case .restore: return "Restoring terrain for"
@@ -106,6 +114,7 @@ enum SceneryAction: String {
     var doneTitle: String {
         switch self {
         case .install: return "Installed"
+        case .update: return "Updated"
         case .uninstall: return "Removed"
         case .seasons: return "Applied seasons to"
         case .restore: return "Restored terrain for"
@@ -116,6 +125,7 @@ enum SceneryAction: String {
     var failedTitle: String {
         switch self {
         case .install: return "Couldn’t install"
+        case .update: return "Couldn’t update"
         case .uninstall: return "Couldn’t remove"
         case .seasons: return "Couldn’t apply seasons to"
         case .restore: return "Couldn’t restore terrain for"
@@ -126,6 +136,7 @@ enum SceneryAction: String {
     var message: String {
         switch self {
         case .install: return "Scenery packages can require substantial disk space."
+        case .update: return "Downloads the newest release of this region and replaces the installed one."
         case .uninstall: return "The downloaded scenery files for this region will be removed."
         case .seasons: return "This modifies the region’s terrain files to support seasonal imagery."
         case .restore: return "This restores the original scenery terrain. Your local terrain patches may be replaced."

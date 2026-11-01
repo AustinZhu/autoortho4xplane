@@ -213,3 +213,14 @@ def test_region_name_survives_removal(setup):
     _, service = setup
     assert service.region_name('eur') == 'Europe'
     assert service.region_name('custom') == 'custom'
+
+
+def test_update_installs_the_latest_release(setup, monkeypatch):
+    _, service = setup
+    calls = []
+    region = SimpleNamespace(install_release=lambda progress_callback=None: calls.append('latest') or True)
+    monkeypatch.setattr(service, 'manager', lambda: SimpleNamespace(regions={'asi': region}))
+    task = service.dispatch('scenery', {'region': 'asi', 'action': 'update'})['task']
+    service.pool.shutdown(wait=True)
+    assert calls == ['latest']
+    assert service.tasks[task]['state'] == 'complete' and service.tasks[task]['name'] == 'Asia'

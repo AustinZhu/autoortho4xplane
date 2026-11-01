@@ -340,7 +340,7 @@ class NativeService:
         return {'regions': items}
 
     def scenery_task(self, action, region_id):
-        if action not in {'install', 'uninstall', 'seasons', 'restore', 'roughness', 'restore_roughness'}:
+        if action not in {'install', 'update', 'uninstall', 'seasons', 'restore', 'roughness', 'restore_roughness'}:
             raise ValueError('Unknown scenery action.')
         with self.lock:
             if any(m['mounted'] for m in self.mounts()) or (self.process and self.process.poll() is None):
@@ -365,7 +365,8 @@ class NativeService:
                 region = manager.regions.get(region_id)
                 if region is None:
                     raise ValueError('This region is unavailable in the current catalog.')
-                if action == 'install':
+                # install_release replaces an older installed release with the latest one.
+                if action in {'install', 'update'}:
                     success = region.install_release(progress_callback=progress)
                     # install_release returns None for an already-installed version.
                     if success is False:

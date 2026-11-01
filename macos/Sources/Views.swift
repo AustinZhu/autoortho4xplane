@@ -131,6 +131,14 @@ struct OverviewView: View {
                 ForEach(model.snapshot?.mounts ?? []) { mount in
                     LabeledContent(model.regionName(forMount: mount.name), value: mount.mounted ? "Mounted" : "Not mounted")
                 }
+                if model.updateCount > 0 {
+                    LabeledContent {
+                        Button("Review…") { model.destination = .scenery }
+                    } label: {
+                        Label(model.updateCount == 1 ? "1 scenery update available" : "\(model.updateCount) scenery updates available",
+                              systemImage: "arrow.down.circle")
+                    }
+                }
                 Button("Manage Scenery…") { model.destination = .scenery }
             }
             Section("Cache") {
@@ -279,7 +287,7 @@ struct SceneryView: View {
             TableColumn("Size") { region in Text(region.bytes > 0 ? byteLabel(region.bytes) : "—").monospacedDigit().foregroundStyle(.secondary) }
                 .width(min: 70, ideal: 80)
             TableColumn("Status") { region in status(region) }.width(min: 110, ideal: 170)
-            TableColumn("") { region in actions(region) }.width(90)
+            TableColumn("") { region in actions(region) }.width(min: 90, ideal: 130)
         }
     }
     @ViewBuilder func status(_ region: Region) -> some View {
@@ -288,27 +296,41 @@ struct SceneryView: View {
                 if let value = task.progress { ProgressView(value: value).controlSize(.small) } else { ProgressView().controlSize(.small) }
                 Text(task.message).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
+        } else if region.updateAvailable, let latest = region.latestVersion {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Update available").foregroundStyle(.tint)
+                Text("Version \(latest)").font(.caption).foregroundStyle(.secondary)
+            }
         } else {
             Text(region.installed ? "Installed" : "Available").foregroundStyle(region.installed ? .primary : .secondary)
         }
     }
     @ViewBuilder func actions(_ region: Region) -> some View {
         if region.installed {
-            Menu {
-                Button("Apply Seasons…") { request(region, .seasons) }
-                Button("Restore Original Terrain…") { request(region, .restore) }
-                Button("Reduce Terrain Reflections…") { request(region, .roughness) }
-                Button("Restore Terrain Reflections…") { request(region, .restore_roughness) }
-                Divider()
-                Button("Remove…", role: .destructive) { request(region, .uninstall) }
-            } label: { Image(systemName: "ellipsis.circle") }
-            .menuStyle(.borderlessButton).fixedSize()
-            .accessibilityLabel("Options for \(region.name)")
-            .disabled(locked).help(lockReason ?? "Region options")
+            HStack(spacing: 6) {
+                if region.updateAvailable {
+                    Button("Update") { request(region, .update) }
+                        .controlSize(.small).disabled(locked).help(lockReason ?? "Install version \(region.latestVersion ?? "")")
+                }
+                optionsMenu(region)
+            }
         } else {
             Button("Install") { request(region, .install) }
                 .controlSize(.small).disabled(locked).help(lockReason ?? "Download and install \(region.name)")
         }
+    }
+    func optionsMenu(_ region: Region) -> some View {
+        Menu {
+            Button("Apply Seasons…") { request(region, .seasons) }
+            Button("Restore Original Terrain…") { request(region, .restore) }
+            Button("Reduce Terrain Reflections…") { request(region, .roughness) }
+            Button("Restore Terrain Reflections…") { request(region, .restore_roughness) }
+            Divider()
+            Button("Remove…", role: .destructive) { request(region, .uninstall) }
+        } label: { Image(systemName: "ellipsis.circle") }
+        .menuStyle(.borderlessButton).fixedSize()
+        .accessibilityLabel("Options for \(region.name)")
+        .disabled(locked).help(lockReason ?? "Region options")
     }
     var lockReason: String? {
         model.running ? "Stop streaming to change scenery." : model.hasRunningTask ? "Wait for the current scenery operation to finish." : nil
@@ -317,17 +339,18 @@ struct SceneryView: View {
         let installed = model.allRegions.filter(\.installed).count
         let available = model.allRegions.count - installed
         let free = byteLabel(model.snapshot?.freeBytes ?? 0)
-        return available > 0 ? "\(installed) installed · \(available) available · \(free) free" : "\(installed) installed · \(free) free"
+        let updates = model.updateCount > 0 ? " · \(model.updateCount) update\(model.updateCount == 1 ? "" : "s")" : ""
+        return (available > 0 ? "\(installed) installed · \(available) available" : "\(installed) installed") + updates + " · \(free) free"
     }
     func request(_ region: Region, _ action: SceneryAction) {
-        if action == .install, region.bytes > 0, region.bytes > (model.snapshot?.freeBytes ?? .max) {
+        if action == .install || action == .update, region.bytes > 0, region.bytes > (model.snapshot?.freeBytes ?? .max) {
             model.fail("Not Enough Disk Space", "\(region.name) needs about \(byteLabel(region.bytes)), but only \(byteLabel(model.snapshot?.freeBytes ?? 0)) is available.")
             return
         }
         pending = .init(region: region, action: action)
     }
     func message(for item: PendingSceneryAction) -> String {
-        guard item.action == .install else { return item.action.message }
+        guard item.action == .install || item.action == .update else { return item.action.message }
         let size = item.region.bytes > 0 ? " Download size: \(byteLabel(item.region.bytes))." : ""
         return "\(item.action.message)\(size) Available: \(byteLabel(model.snapshot?.freeBytes ?? 0)). Progress appears in this list and in Activity."
     }
