@@ -1142,12 +1142,25 @@ class AOMount:
         log.info(f"Shutting down {mountpoint}")
         poison_path = os.path.join(mountpoint, ".poison")
 
-        try:
-            os.lstat(poison_path)  # triggers getattr('.poison') -> fuse_exit
-        except FileNotFoundError:
-            pass
-        except Exception as exc:
-            log.debug(f"Poison trigger stat failed: {exc}")
+        if system_type == 'darwin':
+            # Ask the OS to unmount rather than reading the poison file inside the
+            # volume: FUSE-T mounts are network (NFS) volumes, and any access inside
+            # one makes macOS ask for network-volume permission (again after every
+            # rebuild of an ad-hoc signed app). The FUSE loop returns once the volume
+            # is gone, and the worker shuts down as it does after the poison pill.
+            try:
+                import subprocess
+                subprocess.run(["/usr/sbin/diskutil", "unmount", mountpoint], close_fds=False,  # posix_spawn: no fork
+                               check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as exc:
+                log.debug(f"Unmount request failed: {exc}")
+        else:
+            try:
+                os.lstat(poison_path)  # triggers getattr('.poison') -> fuse_exit
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                log.debug(f"Poison trigger stat failed: {exc}")
 
         if not force:
             deadline = time.time() + wait_timeout

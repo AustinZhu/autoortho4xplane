@@ -349,6 +349,24 @@ def test_unmount_sceneries_unmounts_before_stopping_workers():
     assert calls[1] == ("stop_workers", 8.0)
 
 
+def test_macos_unmount_never_reads_inside_the_volume(monkeypatch):
+    import importlib
+    import subprocess
+    autoortho_mod = importlib.import_module("autoortho")
+    monkeypatch.setattr(autoortho_mod, "system_type", "darwin")
+    commands, stats = [], []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: commands.append(cmd))
+    monkeypatch.setattr(autoortho_mod.os, "lstat", lambda path: stats.append(path))
+    monkeypatch.setattr(autoortho_mod, "safe_ismount", lambda path: False)
+
+    aom = autoortho_mod.AOMount.__new__(autoortho_mod.AOMount)
+    assert autoortho_mod.AOMount.unmount(aom, "/tmp/ao-mount", wait_timeout=0) is True
+
+    # FUSE-T volumes are network volumes: reading inside one prompts for permission.
+    assert stats == []
+    assert commands == [["/usr/sbin/diskutil", "unmount", "/tmp/ao-mount"]]
+
+
 def test_failed_unmount_still_stops_workers():
     import importlib
     autoortho_mod = importlib.import_module("autoortho")
