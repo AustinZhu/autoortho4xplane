@@ -1,6 +1,6 @@
 # AutoOrtho for macOS
 
-The SwiftUI/AppKit app uses the patched AutoOrtho engine from `macos-foundation`.
+The SwiftUI/AppKit app uses the patched AutoOrtho engine on `dev/austin`.
 No Qt windows are created by the native interface. The Python engine, FUSE-T
 integration, imagery providers, native DDS libraries, and existing configuration
 remain in use.

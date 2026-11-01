@@ -184,7 +184,7 @@ else:
                   source_engine_sha256=sha(source_executable), helper_sha256=sha(helper_executable),
                   preserved_engine_modules=len(pyz.toc) - int('native_service' in pyz.toc), changed_engine_modules=[],
                   added_module='native_service', signature='deep strict verification passed',
-                  foundation_commit='385f1f86a968bd682e6fd484cdce150e83472b38')
+                  foundation_commit='cdf230c3bbb4c1cff54d843c7778698467ff16f2')
     (ROOT / 'build/verification.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 
