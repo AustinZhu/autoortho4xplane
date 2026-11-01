@@ -164,3 +164,17 @@ def test_invalid_imagery_edit_does_not_write(setup, tmp_path, monkeypatch, param
     with pytest.raises(ValueError):
         service.imagery(params)
     assert not service.imagery_path.exists()
+
+
+def test_release_size_known_before_parsing():
+    unparsed = SimpleNamespace(totalsize=0, release_dict={'assets': [{'size': 1500}, {'size': '500'}, {}]})
+    assert native.release_size(unparsed) == 2000
+    assert native.release_size(SimpleNamespace(totalsize=42)) == 42
+    assert native.release_size(SimpleNamespace()) == 0
+
+
+def test_installed_regions_use_catalog_display_names(setup):
+    _, service = setup
+    info = service.path('scenery_path') / 'z_autoortho/asi_info.json'
+    info.write_text(json.dumps(dict(id='asi', name='Asia Ortho Set', ver='1', totalsize=100)))
+    assert [region['name'] for region in service.installed()] == ['Asia']

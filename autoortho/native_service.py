@@ -127,6 +127,19 @@ def update_config(path, changes, revision):
             temporary.unlink(missing_ok=True)
 
 
+# Display names for the scenery catalog's region ids; unknown ids keep their own name.
+REGION_NAMES = {'na': 'North America', 'sa': 'South America', 'eur': 'Europe', 'asi': 'Asia',
+                'afr': 'Africa', 'aus_pac': 'Australia and Pacific'}
+
+
+def release_size(release):
+    """Download size from the release's asset list, which is known before parsing."""
+    if getattr(release, 'totalsize', 0):
+        return release.totalsize
+    assets = (getattr(release, 'release_dict', None) or {}).get('assets', [])
+    return sum(int(asset.get('size') or 0) for asset in assets)
+
+
 class NativeService:
     def __init__(self, config=None, executable=None):
         self.config_path = Path(config or Path.home() / '.autoortho')
@@ -152,8 +165,9 @@ class NativeService:
         for path in sorted((self.path('scenery_path') / 'z_autoortho').glob('*_info.json')):
             try:
                 item = json.loads(path.read_text())
-                result.append(dict(id=item.get('id', path.stem.removesuffix('_info')),
-                                   name=item.get('name', path.stem), version=item.get('ver', ''),
+                region_id = item.get('id', path.stem.removesuffix('_info'))
+                result.append(dict(id=region_id, name=REGION_NAMES.get(region_id, item.get('name', path.stem)),
+                                   version=item.get('ver', ''),
                                    bytes=item.get('totalsize', 0), installed=True))
             except (ValueError, OSError):
                 continue
@@ -187,7 +201,7 @@ class NativeService:
                   dict(id='scenery', title='Scenery installed', ok=bool(mounts),
                        detail=f'{len(mounts)} region mount' + ('s' if len(mounts) != 1 else '')),
                   dict(id='storage', title='Available storage', ok=free >= 2 * 1024**3,
-                       detail=f'{free / 1024**3:.1f} GB available')]
+                       detail=f'{free / 1e9:.1f} GB available')]
         log_dir = Path.home() / '.autoortho-data/logs'
         report_dir = Path(cfg.get('diagnostics', 'report_dir', fallback=str(Path.home() / '.autoortho-data/reports')))
         reports = [dict(id=str(p), name=p.parent.name, path=str(p), modified=p.stat().st_mtime)
@@ -298,9 +312,8 @@ class NativeService:
         items = []
         for key, region in manager.regions.items():
             latest = region.get_latest_release()
-            items.append(dict(id=key, name=getattr(latest, 'name', key), version=latest.ver,
-                              installed=region.local_rel is not None,
-                              bytes=getattr(latest, 'totalsize', 0) or 0))
+            items.append(dict(id=key, name=REGION_NAMES.get(key, getattr(latest, 'name', key)), version=latest.ver,
+                              installed=region.local_rel is not None, bytes=release_size(latest)))
         with self.lock:
             self.catalog = items
         return {'regions': items}
@@ -315,6 +328,7 @@ class NativeService:
                 raise ValueError('A scenery operation is already running.')
             task_id = str(time.time_ns())
             self.tasks[task_id] = dict(id=task_id, title=f'{action.capitalize()} {region_id}',
+                                       region=region_id, action=action,
                                        state='running', message='Preparing…', progress=None)
 
         def run():
