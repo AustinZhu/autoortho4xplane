@@ -215,12 +215,14 @@ final class AppModel: ObservableObject {
     func toggleStreaming() {
         if stranded { requestCleanUp() } else if running { requestStop() } else { Task { await streaming(true) } }
     }
-    /// Whether X-Plane is open, matched by the configured install folder or the app's name.
+    /// Whether the X-Plane simulator is open. Matches only the simulator itself, by bundle
+    /// identifier or as X-Plane.app in the configured folder; not the X-Plane installer or
+    /// Plane Maker and Airfoil Maker, which share the folder and name prefix.
     var xplaneRunning: Bool {
         let folder = NSString(string: savedSetting("paths.xplane_path")).expandingTildeInPath
+        let simulator = folder.isEmpty ? nil : URL(fileURLWithPath: folder).appendingPathComponent("X-Plane.app").standardizedFileURL.path
         return NSWorkspace.shared.runningApplications.contains { app in
-            if !folder.isEmpty, let path = app.bundleURL?.path, path.hasPrefix(folder + "/") { return true }
-            return app.localizedName?.hasPrefix("X-Plane") == true
+            app.bundleIdentifier == "com.laminar-research.X-Plane" || (simulator != nil && app.bundleURL?.standardizedFileURL.path == simulator)
         }
     }
     /// Stops at once when X-Plane is closed; otherwise confirms, since stopping removes scenery from the open flight.
