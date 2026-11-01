@@ -11,8 +11,10 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             List(Destination.allCases, selection: $model.destination) { destination in
-                Label(destination.rawValue, systemImage: destination.symbol).tag(destination)
+                // The tag must stay outermost so the List can match rows to the selection.
+                Label(destination.rawValue, systemImage: destination.symbol)
                     .badge(destination == .activity ? model.runningTaskCount : 0)
+                    .tag(destination)
             }
             .navigationSplitViewColumnWidth(min: 175, ideal: 210, max: 260)
             .safeAreaInset(edge: .bottom) { StatusFooter() }
