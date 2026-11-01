@@ -35,9 +35,10 @@ struct RootView: View {
         }
         .frame(minWidth: 850, minHeight: 600)
         .task { model.begin() }
-        .alert("AutoOrtho", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
-            Button("OK", role: .cancel) { model.error = nil }
-        } message: { Text(model.error ?? "") }
+        .alert(model.alert?.title ?? "", isPresented: Binding(get: { model.alert != nil }, set: { if !$0 { model.alert = nil } }),
+               presenting: model.alert) { _ in
+            Button("OK", role: .cancel) { model.alert = nil }
+        } message: { alert in Text(alert.message) }
         .sheet(isPresented: Binding(get: { !model.reportName.isEmpty }, set: { if !$0 { model.reportName = "" } })) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack { Text(model.reportName).font(.headline); Spacer(); Button("Done") { model.reportName = "" }.keyboardShortcut(.defaultAction) }.padding()
@@ -300,7 +301,7 @@ struct SceneryView: View {
     }
     func request(_ region: Region, _ action: SceneryAction) {
         if action == .install, region.bytes > 0, region.bytes > (model.snapshot?.freeBytes ?? .max) {
-            model.error = "\(region.name) needs about \(byteLabel(region.bytes)), but only \(byteLabel(model.snapshot?.freeBytes ?? 0)) is available."
+            model.fail("Not Enough Disk Space", "\(region.name) needs about \(byteLabel(region.bytes)), but only \(byteLabel(model.snapshot?.freeBytes ?? 0)) is available.")
             return
         }
         pending = .init(region: region, action: action)
@@ -414,7 +415,7 @@ struct ImageryInspector: View {
                 }
                 Button("Assign Provider") {
                     guard let lat = Int(latitude), let lon = Int(longitude), (-90...89).contains(lat), (-180...179).contains(lon) else {
-                        model.error = "Enter whole-number coordinates: latitude −90 to 89, longitude −180 to 179."; return
+                        model.fail("Check the Tile Coordinates", "Enter whole-number coordinates: latitude −90 to 89, longitude −180 to 179."); return
                     }
                     Task { await model.assignImagery(latitude: lat, longitude: lon, provider: provider) }
                 }.disabled(latitude.isEmpty || longitude.isEmpty)

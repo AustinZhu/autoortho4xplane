@@ -9,13 +9,20 @@ struct StartBlocker {
     let fix: Fix
 }
 
+/// An alert whose title states what failed, per Apple's alert guidance.
+struct AppAlert: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     static let shared = AppModel()
     let bridge = EngineBridge()
     @Published var snapshot: Snapshot?
     @Published var destination: Destination? = .overview
-    @Published var error: String?
+    @Published var alert: AppAlert?
     @Published var settingsError: String?
     @Published var busy = false
     @Published var transition: String?
@@ -109,6 +116,9 @@ final class AppModel: ObservableObject {
     }
     var hasFinishedTasks: Bool { tasks.contains { $0.state != "running" } }
 
+    func fail(_ title: String, _ error: Error) { fail(title, error.localizedDescription) }
+    func fail(_ title: String, _ message: String) { alert = AppAlert(title: title, message: message) }
+
     func begin() {
         guard !started else { return }; started = true
         polling = Task {
@@ -132,7 +142,7 @@ final class AppModel: ObservableObject {
             }
             hadStreaming = state.status == "streaming"
             if destination == .diagnostics { await readLogs() }
-        } catch { if snapshot == nil { self.error = error.localizedDescription } }
+        } catch { if snapshot == nil { fail("Can’t Connect to the Streaming Engine", error) } }
     }
 
     // MARK: Settings
@@ -182,13 +192,13 @@ final class AppModel: ObservableObject {
         if alert.runModal() == .alertSecondButtonReturn { Task { await streaming(false) } }
     }
     func streaming(_ start: Bool) async {
-        if start, let blocker = startBlocker { error = blocker.message; return }
+        if start, let blocker = startBlocker { fail("Streaming Can’t Start Yet", blocker.message); return }
         busy = true; transition = start ? "Starting streaming…" : "Stopping streaming…"
         defer { busy = false; transition = nil }
         do {
             _ = try await bridge.request(start ? "streaming.start" : "streaming.stop")
             await refresh()
-        } catch { self.error = error.localizedDescription }
+        } catch { fail(start ? "Couldn’t Start Streaming" : "Couldn’t Stop Streaming", error) }
     }
 
     // MARK: Scenery
@@ -197,7 +207,7 @@ final class AppModel: ObservableObject {
         catalogAttempted = true
         loadingCatalog = true; defer { loadingCatalog = false }
         do { _ = try await bridge.request("catalog"); await refresh() }
-        catch { self.error = error.localizedDescription }
+        catch { fail("Couldn’t Load Regions", error) }
     }
     /// Loads the catalog once per session when Scenery first opens. Failures stay quiet;
     /// the Browse Regions and Refresh buttons retry and report errors.
@@ -209,12 +219,12 @@ final class AppModel: ObservableObject {
     }
     func scenery(_ region: Region, action: SceneryAction) async {
         do { _ = try await bridge.request("scenery", ["region": region.id, "action": action.rawValue]); await refresh() }
-        catch { self.error = error.localizedDescription }
+        catch { fail("Couldn’t \(action.title) \(region.name)", error) }
     }
 
     func clearFinishedTasks() async {
         do { _ = try await bridge.request("tasks.clear"); await refresh() }
-        catch { self.error = error.localizedDescription }
+        catch { fail("Couldn’t Clear Activity", error) }
     }
 
     // MARK: Diagnostics
@@ -244,7 +254,7 @@ final class AppModel: ObservableObject {
                                   coordinate: .init(latitude: lat, longitude: lon))
             }
             await rememberPilotID()
-        } catch { self.error = error.localizedDescription }
+        } catch { fail("Couldn’t Load Flight Plan", error) }
     }
     /// Saves a pilot ID that loaded successfully, when that can be done without touching other pending edits.
     /// Only numeric IDs are saved: the engine's other SimBrief client sends this value as `userid`.
@@ -259,7 +269,7 @@ final class AppModel: ObservableObject {
         do {
             let data = try await bridge.request("imagery")
             imagery = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["cells"] as? [String: String] ?? [:]
-        } catch { self.error = error.localizedDescription }
+        } catch { fail("Couldn’t Load Imagery Overrides", error) }
     }
     func assignImagery(latitude: Int, longitude: Int, provider: String?) async {
         do {
@@ -267,7 +277,7 @@ final class AppModel: ObservableObject {
             params["provider"] = provider ?? NSNull() as Any
             let data = try await bridge.request("imagery", params)
             imagery = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["cells"] as? [String: String] ?? [:]
-        } catch { self.error = error.localizedDescription }
+        } catch { fail("Couldn’t Update Imagery Override", error) }
     }
     private func refreshAircraft(port: Int) async {
         guard let url = URL(string: "http://127.0.0.1:\(port)/get_latlon") else { return }
@@ -288,22 +298,22 @@ final class AppModel: ObservableObject {
         // Apply immediately only when this is the sole change, so other pending edits aren't saved silently.
         let applies = applyNow && edits.isEmpty
         edit(id, url.path)
-        if applies { Task { if !(await save()) { error = settingsError; settingsError = nil } } }
+        if applies { Task { if !(await save()) { fail("Couldn’t Save the Folder", settingsError ?? ""); settingsError = nil } } }
     }
     func reveal(_ path: String) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     func showReport(_ report: Report) {
         do { reportText = try String(contentsOfFile: report.path, encoding: .utf8); reportName = report.name }
-        catch { self.error = error.localizedDescription }
+        catch { fail("Couldn’t Open Report", error) }
     }
     func exportLogs() {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "AutoOrtho.log"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do { try (logs + "\n" + bridge.diagnostics).write(to: url, atomically: true, encoding: .utf8) }
-        catch { self.error = error.localizedDescription }
+        catch { fail("Couldn’t Export Log", error) }
     }
     func shutdown() async -> Bool {
-        if hasRunningTask { error = "Wait for the scenery operation to finish before quitting."; return false }
+        if hasRunningTask { fail("AutoOrtho Can’t Quit Yet", "Wait for the scenery operation to finish before quitting."); return false }
         do { _ = try await bridge.request("shutdown"); polling?.cancel(); bridge.close(); return true }
-        catch { self.error = error.localizedDescription; return false }
+        catch { fail("Couldn’t Quit Cleanly", error); return false }
     }
 }
