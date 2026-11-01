@@ -56,7 +56,7 @@ struct NativeSettingsView: View {
             if model.running {
                 Label("Settings are locked while streaming.", systemImage: "lock").foregroundStyle(.secondary)
                 Spacer()
-                Button("Stop Streaming…") { model.requestStop() }.disabled(!model.canStop)
+                Button("Stop Streaming") { model.requestStop() }.disabled(!model.canStop)
             } else {
                 Text(model.edits.isEmpty ? "Settings are up to date." : model.edits.count == 1 ? "1 unapplied change" : "\(model.edits.count) unapplied changes")
                     .foregroundStyle(.secondary)

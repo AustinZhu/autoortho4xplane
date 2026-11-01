@@ -44,6 +44,8 @@ final class AppModel: ObservableObject {
     private var refreshing = false
     private var polling: Task<Void, Never>?
     private var hadStreaming = false
+    /// X-Plane was already open when streaming started, so its loaded flight lacks AutoOrtho scenery.
+    @Published var xplaneStartedFirst = false
 
     var running: Bool { ["streaming", "starting"].contains(snapshot?.status ?? "") }
     var ownsStreaming: Bool { snapshot?.owned == true }
@@ -62,7 +64,9 @@ final class AppModel: ObservableObject {
     var statusDetail: String {
         switch snapshot?.status {
         case "streaming":
-            return ownsStreaming ? "Satellite scenery is available to X-Plane." : "Streaming is managed by another AutoOrtho instance."
+            if !ownsStreaming { return "Streaming is managed by another AutoOrtho instance." }
+            return xplaneStartedFirst ? "X-Plane was already open. Reload your flight to see AutoOrtho scenery."
+                                      : "Satellite scenery is available to X-Plane."
         case "starting": return "Mounting scenery for X-Plane. This can take a minute."
         case "failed":
             let code = snapshot?.engineExit.map { " (exit code \($0))" } ?? ""
@@ -146,6 +150,10 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Settings
+    /// The value on disk, ignoring unapplied edits.
+    func savedSetting(_ id: String) -> String {
+        snapshot?.settings.first(where: { $0.id == id })?.value ?? ""
+    }
     func setting(_ id: String) -> String {
         edits[id] ?? snapshot?.settings.first(where: { $0.id == id })?.value ?? ""
     }
@@ -180,11 +188,21 @@ final class AppModel: ObservableObject {
         if running { requestStop() } else { Task { await streaming(true) } }
     }
     /// Confirms with an app-modal alert so every entry point (window, menu, menu bar) behaves the same.
+    /// Whether X-Plane is open, matched by the configured install folder or the app's name.
+    var xplaneRunning: Bool {
+        let folder = NSString(string: savedSetting("paths.xplane_path")).expandingTildeInPath
+        return NSWorkspace.shared.runningApplications.contains { app in
+            if !folder.isEmpty, let path = app.bundleURL?.path, path.hasPrefix(folder + "/") { return true }
+            return app.localizedName?.hasPrefix("X-Plane") == true
+        }
+    }
+    /// Stops at once when X-Plane is closed; otherwise confirms, since stopping removes scenery from the open flight.
     func requestStop() {
         guard canStop else { return }
+        guard xplaneRunning else { Task { await streaming(false) }; return }
         let alert = NSAlert()
-        alert.messageText = "Stop streaming?"
-        alert.informativeText = "Close your X-Plane flight first. Stopping unmounts the scenery it uses."
+        alert.messageText = "Stop streaming while X-Plane is open?"
+        alert.informativeText = "Stopping unmounts the scenery your flight is using. End the flight first, or stop anyway."
         alert.addButton(withTitle: "Keep Streaming")
         let stop = alert.addButton(withTitle: "Stop Streaming")
         stop.hasDestructiveAction = true
@@ -196,7 +214,9 @@ final class AppModel: ObservableObject {
         busy = true; transition = start ? "Starting streaming…" : "Stopping streaming…"
         defer { busy = false; transition = nil }
         do {
+            let openedFirst = start && xplaneRunning
             _ = try await bridge.request(start ? "streaming.start" : "streaming.stop")
+            xplaneStartedFirst = openedFirst
             await refresh()
         } catch { fail(start ? "Couldn’t Start Streaming" : "Couldn’t Stop Streaming", error) }
     }

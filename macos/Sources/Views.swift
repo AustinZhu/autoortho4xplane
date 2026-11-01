@@ -167,7 +167,7 @@ struct StreamingControls: View {
     }
     @ViewBuilder var primary: some View {
         if model.running {
-            Button { model.requestStop() } label: { Label(model.transition ?? "Stop Streaming…", systemImage: "stop.fill") }
+            Button { model.requestStop() } label: { Label(model.transition ?? "Stop Streaming", systemImage: "stop.fill") }
                 .controlSize(.large).disabled(!model.canStop)
         } else if model.startBlocker?.fix == .applySettings {
             Button { Task { await model.applyAndStart() } } label: { Label("Apply Settings and Start", systemImage: "play.fill") }
@@ -249,7 +249,7 @@ struct SceneryView: View {
         HStack {
             Label("Stop streaming to install or change scenery.", systemImage: "lock").foregroundStyle(.secondary)
             Spacer()
-            Button("Stop Streaming…") { model.requestStop() }.disabled(!model.canStop)
+            Button("Stop Streaming") { model.requestStop() }.disabled(!model.canStop)
         }.font(.callout).padding(.horizontal, 12).padding(.vertical, 8).background(.bar)
     }
     var table: some View {
