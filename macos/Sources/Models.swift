@@ -8,7 +8,7 @@ struct Setting: Codable, Identifiable {
     let value: String
     let help: String
     let kind: String
-    var title: String { key.replacingOccurrences(of: "_", with: " ").capitalized }
+    var title: String { SettingsCatalog.title(for: self) }
 }
 struct ReadinessCheck: Codable, Identifiable {
     let id: String

@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published var snapshot: Snapshot?
     @Published var destination: Destination? = .overview
     @Published var error: String?
+    @Published var settingsError: String?
     @Published var busy = false
     @Published var transition: String?
     @Published var loadingCatalog = false
@@ -123,6 +124,8 @@ final class AppModel: ObservableObject {
         else { edits[id] = value }
     }
     func revert() { edits.removeAll(); editRevision = nil }
+    /// Discards edits and loads the settings as they are on disk now.
+    func reloadSettings() async { revert(); await refresh() }
     @discardableResult
     func save() async -> Bool {
         guard !edits.isEmpty, let revision = editRevision else { return true }
@@ -132,7 +135,7 @@ final class AppModel: ObservableObject {
             snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
             revert()
             return true
-        } catch { self.error = error.localizedDescription; return false }
+        } catch { settingsError = error.localizedDescription; return false }
     }
     func applyAndStart() async {
         if await save() { await streaming(true) }
@@ -229,7 +232,7 @@ final class AppModel: ObservableObject {
         // Apply immediately only when this is the sole change, so other pending edits aren't saved silently.
         let applies = applyNow && edits.isEmpty
         edit(id, url.path)
-        if applies { Task { await save() } }
+        if applies { Task { if !(await save()) { error = settingsError; settingsError = nil } } }
     }
     func reveal(_ path: String) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     func showReport(_ report: Report) {
