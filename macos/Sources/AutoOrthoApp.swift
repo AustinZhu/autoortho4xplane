@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Discard Changes")
             if alert.runModal() != .alertSecondButtonReturn { return .terminateCancel }
         }
-        if model.running && model.xplaneRunning {
+        if (model.running || model.stranded) && model.xplaneRunning {
             let alert = NSAlert()
             alert.messageText = "Stop streaming and quit while X-Plane is open?"
             alert.informativeText = "Quitting unmounts the scenery your flight is using. End the flight first, or quit anyway."
@@ -35,8 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct StreamingCommandButton: View {
     @ObservedObject var model: AppModel
     var body: some View {
-        Button(model.running ? "Stop Streaming" : "Start Streaming") { model.toggleStreaming() }
-            .disabled(model.running ? !model.canStop : !model.canStart)
+        Button(model.stranded ? "Clean Up Scenery" : model.running ? "Stop Streaming" : "Start Streaming") { model.toggleStreaming() }
+            .disabled(model.stranded ? model.busy : model.running ? !model.canStop : !model.canStart)
     }
 }
 

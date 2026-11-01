@@ -4,7 +4,7 @@ import MapKit
 
 /// Why streaming can't start right now, and the one action that resolves it.
 struct StartBlocker {
-    enum Fix { case applySettings, chooseXPlane, manageScenery, waitForTasks, none }
+    enum Fix { case applySettings, chooseXPlane, manageScenery, waitForTasks, cleanUp, none }
     let message: String
     let fix: Fix
 }
@@ -61,6 +61,7 @@ final class AppModel: ObservableObject {
         case "streaming": return "Streaming scenery"
         case "starting": return "Starting streaming…"
         case "failed": return "Streaming stopped unexpectedly"
+        case "stranded": return "Scenery was left mounted"
         default: return snapshot?.ready == true ? "Ready to fly" : "Finish setting up"
         }
     }
@@ -71,6 +72,8 @@ final class AppModel: ObservableObject {
             return xplaneStartedFirst ? "X-Plane was already open. Reload your flight to see AutoOrtho scenery."
                                       : "Satellite scenery is available to X-Plane."
         case "starting": return "Mounting scenery for X-Plane. This can take a minute."
+        case "stranded":
+            return "The streaming engine stopped, but its scenery is still mounted in X-Plane. Clean Up unmounts it."
         case "failed":
             let code = snapshot?.engineExit.map { " (exit code \($0))" } ?? ""
             return "The streaming engine exited\(code). The log shows what happened."
@@ -84,6 +87,7 @@ final class AppModel: ObservableObject {
     }
     var startBlocker: StartBlocker? {
         guard let snapshot else { return .init(message: "Connecting to the streaming engine…", fix: .none) }
+        if snapshot.status == "stranded" { return .init(message: "Clean up the leftover scenery first.", fix: .cleanUp) }
         if let check = snapshot.checks.first(where: { !$0.ok }) {
             switch check.id {
             case "xplane": return .init(message: "Choose your X-Plane folder.", fix: .chooseXPlane)
@@ -98,6 +102,7 @@ final class AppModel: ObservableObject {
     }
     var canStart: Bool { !running && !busy && startBlocker == nil }
     var canStop: Bool { running && !busy && ownsStreaming }
+    var stranded: Bool { snapshot?.status == "stranded" }
     /// Catalog and installed regions together. Installed state comes only from the live installed
     /// list: the catalog's own flag is fixed when it was fetched and goes stale after installs and removals.
     var allRegions: [Region] {
@@ -201,9 +206,8 @@ final class AppModel: ObservableObject {
 
     // MARK: Streaming
     func toggleStreaming() {
-        if running { requestStop() } else { Task { await streaming(true) } }
+        if stranded { requestCleanUp() } else if running { requestStop() } else { Task { await streaming(true) } }
     }
-    /// Confirms with an app-modal alert so every entry point (window, menu, menu bar) behaves the same.
     /// Whether X-Plane is open, matched by the configured install folder or the app's name.
     var xplaneRunning: Bool {
         let folder = NSString(string: savedSetting("paths.xplane_path")).expandingTildeInPath
@@ -224,6 +228,27 @@ final class AppModel: ObservableObject {
         stop.hasDestructiveAction = true
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertSecondButtonReturn { Task { await streaming(false) } }
+    }
+    /// Unmounts scenery a stopped engine left behind; confirms first only while X-Plane could be using it.
+    func requestCleanUp() {
+        guard stranded, !busy else { return }
+        if xplaneRunning {
+            let alert = NSAlert()
+            alert.messageText = "Unmount leftover scenery while X-Plane is open?"
+            alert.informativeText = "The open flight may be using it. End the flight first, or clean up anyway."
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Clean Up").hasDestructiveAction = true
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+        }
+        Task {
+            busy = true; transition = "Cleaning up…"
+            defer { busy = false; transition = nil }
+            do {
+                let data = try await bridge.request("cleanup", timeout: 90)
+                snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+            } catch { fail("Couldn’t Clean Up Scenery", error) }
+        }
     }
     func streaming(_ start: Bool) async {
         if start, let blocker = startBlocker { fail("Streaming Can’t Start Yet", blocker.message); return }

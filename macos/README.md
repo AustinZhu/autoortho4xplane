@@ -36,7 +36,8 @@ Do not run two streaming engines at the same time.
 ## Interface
 
 - Overview: the primary Start/Stop control, the reason streaming can't start
-  with the action that fixes it, setup checks, mount status and storage.
+  with the action that fixes it, setup checks, mount status and storage. If a
+  stopped engine leaves scenery mounted, Clean Up unmounts it.
 - Scenery: installed and available regions with sizes, visible Install and
   Update buttons, inline progress, catalog refresh, removal, seasons, terrain
   restoration, and reflectivity adjustments.

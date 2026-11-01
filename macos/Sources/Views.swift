@@ -73,14 +73,17 @@ struct StreamingToolbarButton: View {
         Button { model.toggleStreaming() } label: {
             if let transition = model.transition {
                 Label(transition, systemImage: "hourglass")
+            } else if model.stranded {
+                Label("Clean Up Scenery", systemImage: "eject.fill")
             } else {
                 Label(model.running ? "Stop Streaming" : "Start Streaming", systemImage: model.running ? "stop.fill" : "play.fill")
             }
         }
-        .disabled(model.running ? !model.canStop : !model.canStart)
+        .disabled(model.stranded ? model.busy : model.running ? !model.canStop : !model.canStart)
         .help(help)
     }
     var help: String {
+        if model.stranded { return "Unmount scenery a stopped engine left behind" }
         if model.running { return model.ownsStreaming ? "Unmount scenery and stop streaming (⌘↩)" : "Streaming is managed by another AutoOrtho instance." }
         return model.startBlocker?.message ?? "Mount installed scenery for X-Plane (⌘↩)"
     }
@@ -185,7 +188,7 @@ struct StreamingControls: View {
                     Button("View Log") { model.destination = .diagnostics }.controlSize(.large)
                 }
             }
-            if !model.running, model.transition == nil, model.snapshot != nil, let blocker = model.startBlocker {
+            if !model.running, !model.stranded, model.transition == nil, model.snapshot != nil, let blocker = model.startBlocker {
                 HStack(spacing: 8) {
                     Label(blocker.message, systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
                     fix(blocker.fix)
@@ -194,7 +197,10 @@ struct StreamingControls: View {
         }
     }
     @ViewBuilder var primary: some View {
-        if model.running {
+        if model.stranded {
+            Button { model.requestCleanUp() } label: { Label(model.transition ?? "Clean Up", systemImage: "eject.fill") }
+                .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
+        } else if model.running {
             Button { model.requestStop() } label: { Label(model.transition ?? "Stop Streaming", systemImage: "stop.fill") }
                 .controlSize(.large).disabled(!model.canStop)
         } else if model.startBlocker?.fix == .applySettings {
@@ -211,7 +217,7 @@ struct StreamingControls: View {
         case .chooseXPlane: Button("Choose X-Plane Folder…") { model.chooseDirectory("paths.xplane_path", applyNow: true) }.buttonStyle(.link)
         case .manageScenery: Button("Add Scenery…") { model.destination = .scenery }.buttonStyle(.link)
         case .waitForTasks: Button("Show Activity") { model.destination = .activity }.buttonStyle(.link)
-        case .none: EmptyView()
+        case .cleanUp, .none: EmptyView()
         }
     }
 }
