@@ -40,7 +40,8 @@ Do not run two streaming engines at the same time.
   restoration, and reflectivity adjustments.
 - Flight Plan: SimBrief loading, a native MapKit route/aircraft map, and an
   imagery override inspector. The map display does not change terrain imagery.
-- Activity: actual progress and failures from existing scenery operations.
+- Activity: progress, results and failures of scenery operations, with
+  Clear Finished.
 - Diagnostics: a filterable, exportable log that follows new entries, and
   recorded performance reports.
 - Settings: user-facing engine settings on ordered pages (General, Imagery,
@@ -53,7 +54,8 @@ Do not run two streaming engines at the same time.
 Command-Return starts or stops streaming (Streaming menu). Command-1 through
 Command-5 navigate (View menu); Command-comma opens Settings. Command-S applies
 settings within that window. The menu-bar item shows status and can start or
-stop streaming after the main window closes. Every stop asks for confirmation.
+stop streaming after the main window closes. Stopping or quitting asks for
+confirmation only while X-Plane is open.
 Quitting waits for graceful engine shutdown; an unmount timeout never
 force-kills it.
 
