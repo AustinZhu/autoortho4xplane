@@ -35,8 +35,8 @@ Do not run two streaming engines at the same time.
 
 - Overview: the primary Start/Stop control, the reason streaming can't start
   with the action that fixes it, setup checks, mount status and storage.
-- Scenery: installed and available regions with sizes, visible Install
-  buttons, inline progress, catalog refresh, removal, seasons, terrain
+- Scenery: installed and available regions with sizes, visible Install and
+  Update buttons, inline progress, catalog refresh, removal, seasons, terrain
   restoration, and reflectivity adjustments.
 - Flight Plan: SimBrief loading, a native MapKit route/aircraft map, and an
   imagery override inspector. The map display does not change terrain imagery.
@@ -49,8 +49,10 @@ Do not run two streaming engines at the same time.
   Qt app, with authored descriptions, native toggles, pickers, range-limited
   number fields and folder panels. Internal state keys are hidden; keys the
   app doesn't know yet appear under Advanced. Search covers every page.
+  Altitude zoom steps are edited as a table rather than a raw literal.
   `macos/Sources/SettingsCatalog.swift` defines the layout.
 
+The window and Settings reopen on the last page used.
 Command-Return starts or stops streaming (Streaming menu). Command-1 through
 Command-5 navigate (View menu); Command-comma opens Settings. Command-S applies
 settings within that window. The menu-bar item shows status and can start or
