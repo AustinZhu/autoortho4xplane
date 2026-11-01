@@ -178,3 +178,38 @@ def test_installed_regions_use_catalog_display_names(setup):
     info = service.path('scenery_path') / 'z_autoortho/asi_info.json'
     info.write_text(json.dumps(dict(id='asi', name='Asia Ortho Set', ver='1', totalsize=100)))
     assert [region['name'] for region in service.installed()] == ['Asia']
+
+
+def test_reports_found_in_home_relative_report_dir(setup, tmp_path, monkeypatch):
+    config, service = setup
+    monkeypatch.setenv('HOME', str(tmp_path))
+    (tmp_path / 'ao-reports/performance-1').mkdir(parents=True)
+    (tmp_path / 'ao-reports/performance-1/report.md').write_text('# report')
+    config.write_text(config.read_text() + '[diagnostics]\nreport_dir = ~/ao-reports\n')
+    assert [report['name'] for report in service.snapshot()['reports']] == ['performance-1']
+
+
+def test_finished_tasks_are_capped_and_clearable(setup):
+    _, service = setup
+    service.tasks = {str(i): dict(id=str(i), state='complete') for i in range(5)}
+    service.tasks['9'] = dict(id='9', state='running')
+    service.prune_tasks(keep=2)
+    assert list(service.tasks) == ['3', '4', '9']
+    service.dispatch('tasks.clear', {})
+    assert list(service.tasks) == ['9']
+
+
+def test_unchanged_log_is_not_resent(setup, tmp_path, monkeypatch):
+    _, service = setup
+    monkeypatch.setenv('HOME', str(tmp_path))
+    (tmp_path / '.autoortho-data/logs').mkdir(parents=True)
+    (tmp_path / '.autoortho-data/logs/autoortho.log').write_text('started\n')
+    first = service.logs()
+    assert first['text'] == 'started\n'
+    assert service.logs({'since': first['stamp']}) == {'stamp': first['stamp'], 'unchanged': True}
+
+
+def test_region_name_survives_removal(setup):
+    _, service = setup
+    assert service.region_name('eur') == 'Europe'
+    assert service.region_name('custom') == 'custom'

@@ -140,6 +140,9 @@ def release_size(release):
     return sum(int(asset.get('size') or 0) for asset in assets)
 
 
+FINISHED_TASKS_KEPT = 20
+
+
 class NativeService:
     def __init__(self, config=None, executable=None):
         self.config_path = Path(config or Path.home() / '.autoortho')
@@ -148,6 +151,8 @@ class NativeService:
         self.started = 0
         self.engine_lock = None
         self.lock = threading.RLock()
+        # AO_RUN_MODE is process-wide; catalog and scenery threads must not interleave its save/restore.
+        self.env_lock = threading.RLock()
         self.tasks = {}
         self.catalog = []
         self.plan = None
@@ -157,12 +162,12 @@ class NativeService:
     def config(self):
         return read_config(self.config_path)[0]
 
-    def path(self, key):
-        return Path(self.config().get('paths', key)).expanduser()
+    def path(self, key, cfg=None):
+        return Path((cfg or self.config()).get('paths', key)).expanduser()
 
-    def installed(self):
+    def installed(self, cfg=None):
         result = []
-        for path in sorted((self.path('scenery_path') / 'z_autoortho').glob('*_info.json')):
+        for path in sorted((self.path('scenery_path', cfg) / 'z_autoortho').glob('*_info.json')):
             try:
                 item = json.loads(path.read_text())
                 region_id = item.get('id', path.stem.removesuffix('_info'))
@@ -173,15 +178,22 @@ class NativeService:
                 continue
         return result
 
-    def mounts(self):
-        custom = self.path('xplane_path') / 'Custom Scenery'
-        root = self.path('scenery_path') / 'z_autoortho/scenery'
+    def region_name(self, region_id):
+        if region_id in REGION_NAMES:
+            return REGION_NAMES[region_id]
+        known = {item['id']: item['name'] for item in self.catalog + self.installed()}
+        return known.get(region_id, region_id)
+
+    def mounts(self, cfg=None):
+        custom = self.path('xplane_path', cfg) / 'Custom Scenery'
+        root = self.path('scenery_path', cfg) / 'z_autoortho/scenery'
         return [dict(name=p.name, path=str(custom / p.name), mounted=os.path.ismount(custom / p.name))
                 for p in sorted(root.iterdir()) if p.is_dir()] if root.is_dir() else []
 
     def snapshot(self):
+        # One parse per snapshot, so paths, checks and settings come from the same file version.
         cfg, text = read_config(self.config_path)
-        mounts = self.mounts()
+        mounts = self.mounts(cfg)
         with self.lock:
             owned = self.process is not None and self.process.poll() is None
             code = self.process.poll() if self.process else None
@@ -190,25 +202,30 @@ class NativeService:
         status = 'streaming' if mounted else ('starting' if owned else 'stopped')
         if code not in (None, 0) and not owned:
             status = 'failed'
-        cache = self.path('cache_dir')
+        cache = self.path('cache_dir', cfg)
         ancestor = cache
         while not ancestor.exists() and ancestor != ancestor.parent:
             ancestor = ancestor.parent
         free = shutil.disk_usage(ancestor).free
-        xplane = self.path('xplane_path')
+        xplane = self.path('xplane_path', cfg)
         checks = [dict(id='xplane', title='X-Plane installation', ok=(xplane / 'Resources').is_dir(),
                        detail=str(xplane)),
                   dict(id='scenery', title='Scenery installed', ok=bool(mounts),
                        detail=f'{len(mounts)} region mount' + ('s' if len(mounts) != 1 else '')),
                   dict(id='storage', title='Available storage', ok=free >= 2e9,
                        detail=f'{free / 1e9:.1f} GB available')]
-        report_dir = Path(cfg.get('diagnostics', 'report_dir', fallback=str(Path.home() / '.autoortho-data/reports')))
-        reports = [dict(id=str(p), name=p.parent.name, path=str(p), modified=p.stat().st_mtime)
-                   for p in report_dir.glob('performance-*/report.md')]
+        report_dir = Path(cfg.get('diagnostics', 'report_dir', fallback='~/.autoortho-data/reports')).expanduser()
+        reports = []
+        for report in report_dir.glob('performance-*/report.md'):
+            try:
+                modified = report.stat().st_mtime
+            except OSError:
+                continue  # Pruned by the engine between glob and stat.
+            reports.append(dict(id=str(report), name=report.parent.name, path=str(report), modified=modified))
         reports.sort(key=lambda item: item['modified'], reverse=True)
         return dict(status=status, owned=owned, ready=all(c['ok'] for c in checks), checks=checks,
                     mounts=mounts, settings=settings_schema(text),
-                    revision=hashlib.sha256(text.encode()).hexdigest(), regions=self.installed(),
+                    revision=hashlib.sha256(text.encode()).hexdigest(), regions=self.installed(cfg),
                     catalog=self.catalog, tasks=tasks, freeBytes=free, reports=reports[:20],
                     port=cfg.getint('flightdata', 'webui_port', fallback=5847), engineExit=code)
 
@@ -273,26 +290,33 @@ class NativeService:
             update_config(self.config_path, params['changes'], params['revision'])
         return self.snapshot()
 
-    def logs(self):
+    def logs(self, params=None):
+        """Tail of the engine log; returns only a stamp when it hasn't changed since `since`."""
         path = Path.home() / '.autoortho-data/logs/autoortho.log'
-        if not path.exists():
-            return {'text': 'No log yet. Start streaming to record activity.'}
+        try:
+            info = path.stat()
+        except OSError:
+            return {'text': 'No log yet. Start streaming to record activity.', 'stamp': ''}
+        stamp = f'{info.st_size}:{info.st_mtime_ns}'
+        if (params or {}).get('since') == stamp:
+            return {'stamp': stamp, 'unchanged': True}
         with path.open('rb') as file:
-            file.seek(max(0, path.stat().st_size - 96000))
-            return {'text': file.read().decode('utf-8', errors='replace')}
+            file.seek(max(0, info.st_size - 96000))
+            return {'text': file.read().decode('utf-8', errors='replace'), 'stamp': stamp}
 
     @contextlib.contextmanager
     def engine_imports(self):
         # Config reads during catalog inspection must not rewrite defaults.
-        previous = os.environ.get('AO_RUN_MODE')
-        os.environ['AO_RUN_MODE'] = 'mount_worker'
-        try:
-            yield
-        finally:
-            if previous is None:
-                os.environ.pop('AO_RUN_MODE', None)
-            else:
-                os.environ['AO_RUN_MODE'] = previous
+        with self.env_lock:
+            previous = os.environ.get('AO_RUN_MODE')
+            os.environ['AO_RUN_MODE'] = 'mount_worker'
+            try:
+                yield
+            finally:
+                if previous is None:
+                    os.environ.pop('AO_RUN_MODE', None)
+                else:
+                    os.environ['AO_RUN_MODE'] = previous
 
     def manager(self):
         with self.engine_imports():
@@ -324,8 +348,9 @@ class NativeService:
             if any(task['state'] == 'running' for task in self.tasks.values()):
                 raise ValueError('A scenery operation is already running.')
             task_id = str(time.time_ns())
-            self.tasks[task_id] = dict(id=task_id, region=region_id, action=action,
-                                       state='running', message='Preparing…', progress=None)
+            self.tasks[task_id] = dict(id=task_id, region=region_id, name=self.region_name(region_id),
+                                       action=action, state='running', message='Preparing…', progress=None)
+            self.prune_tasks()
 
         def run():
             def progress(payload):
@@ -371,6 +396,14 @@ class NativeService:
                     self.tasks[task_id].update(state='failed', message=str(error))
         self.pool.submit(run)
         return {'task': task_id}
+
+    def prune_tasks(self, keep=FINISHED_TASKS_KEPT):
+        """Keep running tasks and only the newest finished ones, so polls stay small."""
+        with self.lock:
+            finished = [key for key, task in self.tasks.items() if task['state'] != 'running']
+            for key in finished[:max(0, len(finished) - keep)]:
+                del self.tasks[key]
+        return {'tasks': len(self.tasks)}
 
     def flight(self, params):
         user = str(params.get('user', '')).strip()
@@ -437,9 +470,11 @@ class NativeService:
         if method == 'streaming.stop':
             return self.stop()
         if method == 'logs':
-            return self.logs()
+            return self.logs(params)
         if method == 'catalog':
             return self.refresh_catalog()
+        if method == 'tasks.clear':
+            return self.prune_tasks(keep=0)
         if method == 'scenery':
             return self.scenery_task(params['action'], params['region'])
         if method == 'flight':
