@@ -144,6 +144,15 @@ enum SettingsCatalog {
         }
     }
 
+    /// Help text, replacing engine comments that describe a raw format the app now edits for the user.
+    static func help(for setting: Setting) -> String? {
+        switch setting.id {
+        case "autoortho.dynamic_zoom_steps":
+            return "Each step sets the maximum zoom at or above an altitude above ground. The ground step always applies."
+        default: return setting.help
+        }
+    }
+
     static func isFolder(_ setting: Setting) -> Bool {
         setting.section == "paths" || setting.key == "report_dir"
     }

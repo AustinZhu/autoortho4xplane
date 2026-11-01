@@ -98,7 +98,7 @@ struct SettingRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             control
-            if !setting.help.isEmpty { Text(setting.help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            if let help = SettingsCatalog.help(for: setting), !help.isEmpty { Text(help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
         }
         .padding(.vertical, 3)
         .help(model.edits[setting.id] != nil ? "Changed — not applied yet" : "")
@@ -115,6 +115,11 @@ struct SettingRow: View {
             Picker(selection: model.binding(setting.id)) {
                 ForEach(choices.contains(current) ? choices : [current] + choices, id: \.self) { Text($0.isEmpty ? "Default" : $0).tag($0) }
             } label: { title }
+        } else if setting.id == "autoortho.dynamic_zoom_steps", let steps = ZoomSteps.parse(model.setting(setting.id)) {
+            VStack(alignment: .leading, spacing: 8) {
+                title
+                ZoomStepsEditor(id: setting.id, steps: steps)
+            }
         } else if setting.kind == "integer" {
             LabeledContent { IntegerField(id: setting.id, limits: SettingsCatalog.limits(setting.id)) } label: { title }
         } else if setting.kind == "number" {
@@ -158,4 +163,99 @@ struct IntegerField: View {
         }
         .help(limits.map { "\($0.lowerBound)–\($0.upperBound)" } ?? "")
     }
+}
+
+/// One altitude band of dynamic zoom: the maximum zoom at or above `altitude` feet AGL.
+struct ZoomStep: Equatable {
+    var altitude: Int
+    var zoom: Int
+    var airports: Int
+}
+
+/// Reads and writes `autoortho.dynamic_zoom_steps`, a Python literal list of dicts (see utils/dynamic_zoom.py).
+enum ZoomSteps {
+    static let zoomRange = 12...19
+    static let altitudeRange = 1000...60000
+
+    static func parse(_ text: String) -> [ZoomStep]? {
+        guard let data = text.replacingOccurrences(of: "'", with: "\"").data(using: .utf8),
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+        var steps: [ZoomStep] = []
+        for item in list {
+            guard let altitude = (item["altitude_ft"] as? NSNumber)?.intValue,
+                  let zoom = (item["zoom_level"] as? NSNumber)?.intValue else { return nil }
+            steps.append(ZoomStep(altitude: altitude, zoom: zoom, airports: (item["zoom_level_airports"] as? NSNumber)?.intValue ?? 18))
+        }
+        return steps.sorted { $0.altitude < $1.altitude }
+    }
+
+    /// Same text Python's str() produces, which the engine parses with ast.literal_eval.
+    static func serialize(_ steps: [ZoomStep]) -> String {
+        "[" + steps.sorted { $0.altitude < $1.altitude }.map {
+            "{'altitude_ft': \($0.altitude), 'zoom_level': \($0.zoom), 'zoom_level_airports': \($0.airports)}"
+        }.joined(separator: ", ") + "]"
+    }
+
+    /// A new step 5,000 ft above the highest, one zoom level lower, as the Qt editor does.
+    static func next(after steps: [ZoomStep]) -> ZoomStep {
+        let highest = steps.max { $0.altitude < $1.altitude } ?? ZoomStep(altitude: 0, zoom: 16, airports: 18)
+        var altitude = min(altitudeRange.upperBound, max(altitudeRange.lowerBound, highest.altitude + 5000))
+        while steps.contains(where: { $0.altitude == altitude }) && altitude < altitudeRange.upperBound { altitude += 1000 }
+        return ZoomStep(altitude: altitude, zoom: max(zoomRange.lowerBound, highest.zoom - 1),
+                        airports: max(zoomRange.lowerBound, highest.airports - 1))
+    }
+}
+
+struct ZoomStepsEditor: View {
+    @EnvironmentObject var model: AppModel
+    let id: String
+    let steps: [ZoomStep]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                GridRow {
+                    Text("At or above (ft AGL)"); Text("Max zoom"); Text("Near airports"); Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                }.font(.caption).foregroundStyle(.secondary)
+                ForEach(steps.indices, id: \.self) { index in
+                    GridRow {
+                        if steps[index].altitude == 0 {
+                            Text("Ground").foregroundStyle(.secondary)
+                        } else {
+                            HStack(spacing: 4) {
+                                TextField("", value: binding(index, \.altitude, ZoomSteps.altitudeRange), format: .number)
+                                    .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
+                                Stepper("", value: binding(index, \.altitude, ZoomSteps.altitudeRange), in: ZoomSteps.altitudeRange, step: 1000).labelsHidden()
+                            }
+                        }
+                        Stepper("ZL \(steps[index].zoom)", value: binding(index, \.zoom, ZoomSteps.zoomRange), in: ZoomSteps.zoomRange)
+                        Stepper("ZL \(steps[index].airports)", value: binding(index, \.airports, ZoomSteps.zoomRange), in: ZoomSteps.zoomRange)
+                        Button { write(steps.enumerated().filter { $0.offset != index }.map(\.element)) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless).disabled(steps[index].altitude == 0)
+                            .help(steps[index].altitude == 0 ? "The ground step can’t be removed" : "Remove this step")
+                            .accessibilityLabel("Remove step")
+                    }
+                }
+            }
+            HStack {
+                Button("Add Step") { write(steps + [ZoomSteps.next(after: steps)]) }
+                if !steps.contains(where: { $0.altitude == 0 }) {
+                    Button("Add Ground Step") { write(steps + [ZoomStep(altitude: 0, zoom: 16, airports: 18)]) }
+                }
+                if Set(steps.map(\.altitude)).count != steps.count {
+                    Label("Two steps share an altitude.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption)
+                }
+            }
+            if model.setting("autoortho.max_zoom_mode") != "dynamic" {
+                Text("These steps apply when Zoom mode is dynamic.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+    func binding(_ index: Int, _ field: WritableKeyPath<ZoomStep, Int>, _ range: ClosedRange<Int>) -> Binding<Int> {
+        Binding(get: { steps[index][keyPath: field] }, set: { value in
+            var updated = steps
+            updated[index][keyPath: field] = min(max(value, range.lowerBound), range.upperBound)
+            write(updated)
+        })
+    }
+    func write(_ updated: [ZoomStep]) { model.edit(id, ZoomSteps.serialize(updated)) }
 }
