@@ -30,20 +30,26 @@ Do not run two streaming engines at the same time.
 
 ## Interface
 
-- Overview: real installation/storage checks, mount status, and start/stop.
-- Scenery: installed regions, catalog refresh, downloads, removal, seasons,
-  terrain restoration, and reflectivity adjustments.
+- Overview: the primary Start/Stop control, the reason streaming can't start
+  with the action that fixes it, setup checks, mount status and storage.
+- Scenery: installed and available regions with sizes, visible Install
+  buttons, inline progress, catalog refresh, removal, seasons, terrain
+  restoration, and reflectivity adjustments.
 - Flight Plan: SimBrief loading, a native MapKit route/aircraft map, and an
   imagery override inspector. The map display does not change terrain imagery.
 - Activity: actual progress and failures from existing scenery operations.
 - Diagnostics: searchable/exportable logs and recorded performance reports.
-- Settings: every existing engine setting, organized by category, with authored
-  descriptions, native toggles/pickers/steppers and folder panels. Uncommon
-  structured settings retain a text editor for their existing serialized format.
+- Settings: user-facing engine settings on ordered pages (General, Imagery,
+  Loading, Storage, Scenery, Flight, Advanced, Diagnostics) grouped as in the
+  Qt app, with authored descriptions, native toggles, pickers, range-limited
+  number fields and folder panels. Internal state keys are hidden; keys the
+  app doesn't know yet appear under Advanced. Search covers every page.
+  `macos/Sources/SettingsCatalog.swift` defines the layout.
 
-Command-1 through Command-5 navigate; Command-comma opens Settings. Command-S
-applies settings within that window. The standard Window/View menus and menu-bar
-item keep streaming available after the main window closes. Quitting waits for
+Command-Return starts or stops streaming (Streaming menu). Command-1 through
+Command-5 navigate (View menu); Command-comma opens Settings. Command-S applies
+settings within that window. The menu-bar item shows status and can start or
+stop streaming after the main window closes. Every stop asks for confirmation. Quitting waits for
 graceful engine shutdown; an unmount timeout never force-kills it.
 
 Read-only refresh does not load the configuration-writing engine modules.

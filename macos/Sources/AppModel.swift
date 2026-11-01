@@ -22,7 +22,7 @@ final class AppModel: ObservableObject {
     @Published var loadingCatalog = false
     @Published var logs = ""
     @Published var sceneryQuery = ""
-    @Published var search = ""
+    @Published var logQuery = ""
     @Published var edits: [String: String] = [:]
     @Published var pilotID = ""
     @Published var route: [RoutePoint] = []
@@ -233,9 +233,18 @@ final class AppModel: ObservableObject {
                 return RoutePoint(id: String(index), name: String(describing: fix["ident"] ?? fix["icao_code"] ?? "Fix"),
                                   coordinate: .init(latitude: lat, longitude: lon))
             }
+            await rememberPilotID()
         } catch { self.error = error.localizedDescription }
     }
     /// Saves a pilot ID that loaded successfully, when that can be done without touching other pending edits.
+    /// Only numeric IDs are saved: the engine's other SimBrief client sends this value as `userid`.
+    private func rememberPilotID() async {
+        guard let snapshot, !running, edits.isEmpty, !pilotID.isEmpty, pilotID.allSatisfy(\.isASCII), pilotID.allSatisfy(\.isNumber),
+              snapshot.settings.contains(where: { $0.id == "simbrief.userid" }),
+              setting("simbrief.userid") != pilotID else { return }
+        if let data = try? await bridge.request("settings.save", ["changes": ["simbrief.userid": pilotID], "revision": snapshot.revision]),
+           let state = try? JSONDecoder().decode(Snapshot.self, from: data) { self.snapshot = state }
+    }
     func loadImagery() async {
         do {
             let data = try await bridge.request("imagery")

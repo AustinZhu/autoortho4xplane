@@ -345,6 +345,8 @@ struct ActivityView: View {
     }
 }
 
+// MARK: - Flight
+
 struct FlightView: View {
     @EnvironmentObject var model: AppModel
     @NativeState<MapCameraPosition> private var position = .automatic
@@ -385,29 +387,32 @@ struct FlightView: View {
         .inspector(isPresented: $showImagery) { ImageryInspector().environmentObject(model) }
         .toolbar {
             Button { showImagery.toggle() } label: { Label("Imagery Overrides", systemImage: "map.badge.plus") }
+                .help("Assign imagery sources to individual tiles")
         }
     }
 }
 
 struct ImageryInspector: View {
     @EnvironmentObject var model: AppModel
-    @NativeState<String> private var latitude = "35"
-    @NativeState<String> private var longitude = "139"
+    @NativeState<String> private var latitude = ""
+    @NativeState<String> private var longitude = ""
     @NativeState<String> private var provider = "BI"
     var body: some View {
         Form {
             Section("Imagery Overrides") {
                 Text("Assign an imagery source to a one-degree tile. Existing overrides are kept.").font(.callout).foregroundStyle(.secondary)
-                TextField("South latitude", text: $latitude)
-                TextField("West longitude", text: $longitude)
+                TextField("South latitude", text: $latitude, prompt: Text("e.g. 35"))
+                TextField("West longitude", text: $longitude, prompt: Text("e.g. 139"))
                 Picker("Provider", selection: $provider) {
                     ForEach(["BI", "NAIP", "EOX", "USGS", "Firefly", "GO2", "ARC", "YNDX", "APPLE"], id: \.self) { Text($0).tag($0) }
                 }
                 Button("Assign Provider") {
-                    guard let lat = Int(latitude), let lon = Int(longitude) else { model.error = "Enter integer latitude and longitude values."; return }
+                    guard let lat = Int(latitude), let lon = Int(longitude), (-90...89).contains(lat), (-180...179).contains(lon) else {
+                        model.error = "Enter whole-number coordinates: latitude −90 to 89, longitude −180 to 179."; return
+                    }
                     Task { await model.assignImagery(latitude: lat, longitude: lon, provider: provider) }
-                }
-                Text("Select Custom Map as the imagery source in Streaming settings to use these overrides.").font(.caption).foregroundStyle(.secondary)
+                }.disabled(latitude.isEmpty || longitude.isEmpty)
+                Text("Select Custom Map as the imagery source in Settings › Imagery to use these overrides.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Assigned Tiles") {
                 if model.imagery.isEmpty { Text("No overrides").foregroundStyle(.secondary) }
@@ -426,21 +431,32 @@ struct ImageryInspector: View {
     }
 }
 
+// MARK: - Diagnostics
+
 struct DiagnosticsView: View {
     @EnvironmentObject var model: AppModel
     @NativeState<String> private var tab = "Log"
+    @NativeState<Bool> private var follow = true
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Diagnostics", selection: $tab) { Text("Log").tag("Log"); Text("Performance Reports").tag("Reports") }.pickerStyle(.segmented).padding()
+            Picker("Diagnostics", selection: $tab) { Text("Log").tag("Log"); Text("Performance Reports").tag("Reports") }
+                .pickerStyle(.segmented).labelsHidden().padding()
             Divider()
             if tab == "Log" {
-                ScrollView {
-                    Text(model.logs.isEmpty ? "No log entries." : filteredLogs)
-                        .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding()
-                }.background(.background)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(model.logs.isEmpty ? "No log entries." : filteredLogs)
+                            .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding()
+                        Color.clear.frame(height: 1).id("end")
+                    }
+                    .background(.background)
+                    .onAppear { if follow { proxy.scrollTo("end", anchor: .bottom) } }
+                    .onChange(of: model.logs) { if follow && model.logQuery.isEmpty { proxy.scrollTo("end", anchor: .bottom) } }
+                    .onChange(of: follow) { if follow { proxy.scrollTo("end", anchor: .bottom) } }
+                }
             } else if model.snapshot?.reports.isEmpty != false {
-                ContentUnavailableView("No performance reports", systemImage: "chart.xyaxis.line", description: Text("Recorded flight reports appear after a streaming session ends."))
+                ContentUnavailableView("No performance reports", systemImage: "chart.xyaxis.line", description: Text("Turn on Record performance reports in Settings › Diagnostics. Reports appear after a streaming session ends."))
             } else {
                 List(model.snapshot?.reports ?? []) { report in
                     HStack {
@@ -455,12 +471,14 @@ struct DiagnosticsView: View {
                 }
             }
         }
-        .searchable(text: $model.search, prompt: "Filter log")
+        .searchable(text: $model.logQuery, prompt: "Filter log")
         .toolbar {
+            Toggle(isOn: $follow) { Label("Follow Log", systemImage: "arrow.down.to.line") }
+                .help("Keep the newest log entries in view")
             Button { model.exportLogs() } label: { Label("Export Log…", systemImage: "square.and.arrow.up") }
             Button { Task { await model.readLogs() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
         }
         .task { await model.readLogs() }
     }
-    var filteredLogs: String { model.search.isEmpty ? model.logs : model.logs.components(separatedBy: .newlines).filter { $0.localizedCaseInsensitiveContains(model.search) }.joined(separator: "\n") }
+    var filteredLogs: String { model.logQuery.isEmpty ? model.logs : model.logs.components(separatedBy: .newlines).filter { $0.localizedCaseInsensitiveContains(model.logQuery) }.joined(separator: "\n") }
 }
