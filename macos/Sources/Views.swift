@@ -90,6 +90,8 @@ struct StreamingToolbarButton: View {
 
 struct OverviewView: View {
     @EnvironmentObject var model: AppModel
+    @NativeState<Bool> private var showChecks = false
+    var checks: [ReadinessCheck] { model.snapshot?.checks ?? [] }
     var body: some View {
         Form {
             Section {
@@ -105,36 +107,54 @@ struct OverviewView: View {
                 StreamingControls().padding(.bottom, 8)
             }
             Section("Setup") {
-                ForEach(model.snapshot?.checks ?? []) { check in
+                // Passing checks collapse to one line so the Start button stays the focus.
+                if checks.allSatisfy(\.ok) && !showChecks {
                     LabeledContent {
                         HStack(spacing: 10) {
-                            if !check.ok { fixButton(for: check) }
-                            Image(systemName: check.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
-                                .foregroundStyle(check.ok ? .green : .orange)
-                                .accessibilityLabel(check.ok ? "Ready" : "Needs attention")
+                            Button("Show Details") { showChecks = true }.buttonStyle(.link)
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Ready")
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(check.title)
-                            Text(check.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text("Everything is set up")
+                            Text(checks.map(\.detail).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                } else {
+                    checkRows
+                    if checks.allSatisfy(\.ok) { Button("Hide Details") { showChecks = false }.buttonStyle(.link) }
                 }
                 SettingsLink { Label("Open Settings…", systemImage: "gearshape") }
             }
             Section("Scenery") {
-                LabeledContent("Installed regions", value: "\(model.snapshot?.regions.count ?? 0)")
+                if model.snapshot?.mounts.isEmpty != false { Text("No regions installed").foregroundStyle(.secondary) }
                 ForEach(model.snapshot?.mounts ?? []) { mount in
                     LabeledContent(model.regionName(forMount: mount.name), value: mount.mounted ? "Mounted" : "Not mounted")
                 }
                 Button("Manage Scenery…") { model.destination = .scenery }
             }
-            Section("Storage") {
-                LabeledContent("Available disk space", value: byteLabel(model.snapshot?.freeBytes ?? 0))
-                LabeledContent("Disk cache limit", value: "\(model.setting("cache.file_cache_size")) GB")
-                LabeledContent("Memory cache limit", value: "\(model.setting("cache.cache_mem_limit")) GB")
+            Section("Cache") {
+                LabeledContent("Disk cache limit", value: "\(model.savedSetting("cache.file_cache_size")) GB")
+                LabeledContent("Memory cache limit", value: "\(model.savedSetting("cache.cache_mem_limit")) GB")
             }
         }.formStyle(.grouped)
+    }
+    @ViewBuilder var checkRows: some View {
+        ForEach(checks) { check in
+            LabeledContent {
+                HStack(spacing: 10) {
+                    if !check.ok { fixButton(for: check) }
+                    Image(systemName: check.ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .foregroundStyle(check.ok ? .green : .orange)
+                        .accessibilityLabel(check.ok ? "Ready" : "Needs attention")
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(check.title)
+                    Text(check.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+        }
     }
     @ViewBuilder func fixButton(for check: ReadinessCheck) -> some View {
         switch check.id {
