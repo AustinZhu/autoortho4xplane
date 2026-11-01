@@ -271,13 +271,23 @@ def test_orphaned_processes_without_mounts_are_cleaned_up(setup, monkeypatch):
     monkeypatch.setattr(native.os.path, 'ismount', lambda path: False)
     procs = [(800, 1, '/not/launched --root x --mountpoint /gone'), (801, 1, '/not/launched -c from multiprocessing.resource_tracker import main'),
              (802, 1, '/other/app --multiprocessing-fork'), (803, 42, '/not/launched --multiprocessing-fork')]
-    monkeypatch.setattr(service, 'processes', lambda: procs)
+    monkeypatch.setattr(service, 'processes', lambda: list(procs))
     assert service.snapshot()['status'] == 'stranded'
     killed = []
-    monkeypatch.setattr(native.os, 'kill', lambda pid, sig: killed.append(pid))
-    service.cleanup()
-    # Only our engine's orphans: never another app's processes or ones with a live parent.
-    assert killed == [800, 801]
+    def kill(pid, sig):
+        killed.append(pid)
+        if pid != 800:  # The worker ignores SIGTERM, like one whose engine vanished.
+            procs[:] = [proc for proc in procs if proc[0] != pid]
+        elif sig == native.signal.SIGKILL:
+            procs[:] = [proc for proc in procs if proc[0] != pid]
+    monkeypatch.setattr(native.os, 'kill', kill)
+    monkeypatch.setattr(native.time, 'sleep', lambda seconds: None)
+    clock = iter(range(0, 10_000))
+    monkeypatch.setattr(native.time, 'monotonic', lambda: next(clock))
+    assert service.cleanup()['status'] == 'stopped'
+    # SIGTERM first, SIGKILL for the worker that ignored it; never another app's
+    # processes or ones with a live parent.
+    assert killed == [800, 801, 800]
 
 
 def test_hung_engine_is_killed_only_after_scenery_unmounts(setup, monkeypatch):

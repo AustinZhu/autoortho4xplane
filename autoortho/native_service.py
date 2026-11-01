@@ -384,13 +384,21 @@ class NativeService:
         for item in self.mounts():
             if item['mounted']:
                 subprocess.run(['diskutil', 'unmount', 'force', item['path']], capture_output=True, check=False)
-        # The engine's multiprocessing helpers (and any worker that ignored SIGTERM) outlive it the same way.
+        if any(item['mounted'] for item in self.mounts()):
+            raise ValueError('Scenery is still mounted. Eject it in Finder, then try again.')
+        # The engine's multiprocessing helpers outlive it the same way.
         for pid, _ in self.orphans():
             if pid not in workers:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.kill(pid, signal.SIGTERM)
-        if any(item['mounted'] for item in self.mounts()):
-            raise ValueError('Scenery is still mounted. Eject it in Finder, then try again.')
+        # Nothing is mounted now, so ending stragglers can't strand scenery. A worker whose
+        # engine vanished can hang in its own shutdown and ignore SIGTERM; end it and its
+        # children (FUSE-T's NFS server) after a short grace period.
+        deadline = time.monotonic() + 5
+        while self.orphans() and time.monotonic() < deadline:
+            time.sleep(0.5)
+        for pid, _ in self.orphans():
+            self.kill_tree(pid)
         return self.snapshot()
 
     def save(self, params):
