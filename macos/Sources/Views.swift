@@ -12,7 +12,7 @@ struct RootView: View {
         NavigationSplitView {
             List(Destination.allCases, selection: $model.destination) { destination in
                 // The tag must stay outermost so the List can match rows to the selection.
-                Label(destination.rawValue, systemImage: destination.symbol)
+                SidebarLabel(title: destination.rawValue, symbol: destination.symbol, selected: model.destination == destination)
                     .badge(destination == .activity ? model.runningTaskCount : 0)
                     .tag(destination)
             }
@@ -48,6 +48,24 @@ struct RootView: View {
         }
         .overlay {
             if model.snapshot == nil { ProgressView("Connecting to AutoOrtho…").padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+        }
+    }
+}
+
+/// A sidebar row label whose icon has an explicit color. The default sidebar icon is drawn
+/// with vibrancy against what's behind the window, and Mission Control renders window
+/// previews without that backdrop, so default icons vanish from the preview.
+struct SidebarLabel: View {
+    let title: String
+    let symbol: String
+    let selected: Bool
+    @Environment(\.controlActiveState) private var activeState
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            // White on the selected row's accent highlight (key window), accent elsewhere.
+            Image(systemName: symbol).foregroundStyle(selected && activeState == .key ? Color.white : Color.accentColor)
         }
     }
 }

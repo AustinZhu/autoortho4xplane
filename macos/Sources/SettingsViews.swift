@@ -17,7 +17,7 @@ struct NativeSettingsView: View {
     var body: some View {
         NavigationSplitView {
             List(pages, selection: $page) { page in
-                Label(page.title, systemImage: page.symbol).tag(page.id)
+                SidebarLabel(title: page.title, symbol: page.symbol, selected: self.page == page.id).tag(page.id)
             }
             .navigationSplitViewColumnWidth(180)
         } detail: {
