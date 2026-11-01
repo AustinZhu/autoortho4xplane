@@ -194,7 +194,7 @@ def setupmount(mountpoint, systemtype):
             elif systemtype == "macOS":
                 try:
                     import subprocess
-                    subprocess.run(["diskutil", "unmount", "force", mountpoint],
+                    subprocess.run(["/usr/sbin/diskutil", "unmount", "force", mountpoint], close_fds=False,  # posix_spawn: no fork
                                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception as exc:
                     log.debug(f"macOS preflight unmount failed: {exc}")
@@ -1161,7 +1161,7 @@ class AOMount:
                 import subprocess
                 if system_type == 'darwin':
                     log.info(f"Force unmounting {mountpoint} via diskutil")
-                    subprocess.run(["diskutil", "unmount", "force", mountpoint],
+                    subprocess.run(["/usr/sbin/diskutil", "unmount", "force", mountpoint], close_fds=False,  # posix_spawn: no fork
                                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif system_type == 'linux':
                     log.info(f"Force unmounting {mountpoint} via fusermount -u -z")

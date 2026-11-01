@@ -96,8 +96,11 @@ def is_macfuse_mount(path: str) -> bool:
     try:
         import subprocess
         abs_path = os.path.realpath(os.path.expanduser(path))
+        # posix_spawn (absolute path, close_fds=False) instead of fork: forking the
+        # multithreaded engine can deadlock in Apple's fork handlers before exec,
+        # where the timeout can't help. Diagnostics poll this repeatedly.
         output = subprocess.check_output(
-            ["mount"], text=True, errors="ignore", timeout=5,
+            ["/sbin/mount"], text=True, errors="ignore", timeout=5, close_fds=False,
         )
 
         for line in output.splitlines():
