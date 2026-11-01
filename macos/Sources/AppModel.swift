@@ -95,11 +95,18 @@ final class AppModel: ObservableObject {
     }
     var canStart: Bool { !running && !busy && startBlocker == nil }
     var canStop: Bool { running && !busy && ownsStreaming }
+    /// Catalog and installed regions together. Installed state comes only from the live installed
+    /// list: the catalog's own flag is fixed when it was fetched and goes stale after installs and removals.
+    var allRegions: [Region] {
+        let installed = Dictionary(uniqueKeysWithValues: (snapshot?.regions ?? []).map { ($0.id, $0) })
+        var items = installed
+        for region in snapshot?.catalog ?? [] where installed[region.id] == nil {
+            items[region.id] = Region(id: region.id, name: region.name, version: region.version, bytes: region.bytes, installed: false)
+        }
+        return items.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
     var regions: [Region] {
-        var items = Dictionary(uniqueKeysWithValues: (snapshot?.catalog ?? []).map { ($0.id, $0) })
-        for region in snapshot?.regions ?? [] { items[region.id] = region }
-        return items.values.filter { sceneryQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(sceneryQuery) }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        allRegions.filter { sceneryQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(sceneryQuery) }
     }
     func task(for region: Region) -> EngineTask? {
         tasks.last { $0.region == region.id && $0.state == "running" }

@@ -314,8 +314,8 @@ struct SceneryView: View {
         model.running ? "Stop streaming to change scenery." : model.hasRunningTask ? "Wait for the current scenery operation to finish." : nil
     }
     var summary: String {
-        let installed = model.snapshot?.regions.count ?? 0
-        let available = (model.snapshot?.catalog ?? []).filter { !$0.installed }.count
+        let installed = model.allRegions.filter(\.installed).count
+        let available = model.allRegions.count - installed
         let free = byteLabel(model.snapshot?.freeBytes ?? 0)
         return available > 0 ? "\(installed) installed · \(available) available · \(free) free" : "\(installed) installed · \(free) free"
     }
