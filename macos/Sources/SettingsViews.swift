@@ -5,8 +5,8 @@ struct NativeSettingsView: View {
     @EnvironmentObject var model: AppModel
     @NativeState<String?> private var page: String?
     @NativeState<String> private var filter: String
-    init(page: String = "general", filter: String = "") {
-        _page = NativeState(initialValue: page)
+    init(page: String? = nil, filter: String = "") {
+        _page = NativeState(initialValue: page ?? UserDefaults.standard.string(forKey: "lastSettingsPage") ?? "general")
         _filter = NativeState(initialValue: filter)
     }
     var visible: [Setting] { (model.snapshot?.settings ?? []).filter(SettingsCatalog.isVisible) }
@@ -40,6 +40,7 @@ struct NativeSettingsView: View {
         .frame(minWidth: 850, minHeight: 620)
         .searchable(text: $filter, prompt: "Search settings")
         .navigationTitle("AutoOrtho Settings")
+        .onChange(of: page) { UserDefaults.standard.set(page, forKey: "lastSettingsPage") }
         .alert("Settings could not be saved", isPresented: Binding(get: { model.settingsError != nil }, set: { if !$0 { model.settingsError = nil } })) {
             if conflict {
                 Button("Discard Changes and Reload", role: .destructive) { model.settingsError = nil; Task { await model.reloadSettings() } }
@@ -76,7 +77,9 @@ struct NativeSettingsView: View {
         let matches = filter.isEmpty ? visible : visible.filter {
             $0.title.localizedCaseInsensitiveContains(filter) || $0.help.localizedCaseInsensitiveContains(filter) || $0.key.localizedCaseInsensitiveContains(filter)
         }
-        let scoped = filter.isEmpty ? pages.filter { $0.id == (page ?? "general") } : pages
+        // A remembered page that no longer exists falls back to the first page.
+        let current = pages.contains { $0.id == page } ? page : pages.first?.id
+        let scoped = filter.isEmpty ? pages.filter { $0.id == current } : pages
         return scoped.flatMap { page -> [SectionContent] in
             let items = matches.filter { SettingsCatalog.placement(of: $0).page == page.id }
             let groups = page.groups + Set(items.map { SettingsCatalog.placement(of: $0).group }).subtracting(page.groups).sorted()

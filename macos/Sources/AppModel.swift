@@ -21,7 +21,10 @@ final class AppModel: ObservableObject {
     static let shared = AppModel()
     let bridge = EngineBridge()
     @Published var snapshot: Snapshot?
-    @Published var destination: Destination? = .overview
+    /// Restored at launch, so the window reopens where the user left it.
+    @Published var destination: Destination? = Destination(rawValue: UserDefaults.standard.string(forKey: "lastPage") ?? "") ?? .overview {
+        didSet { UserDefaults.standard.set(destination?.rawValue, forKey: "lastPage") }
+    }
     @Published var alert: AppAlert?
     @Published var settingsError: String?
     @Published var busy = false
