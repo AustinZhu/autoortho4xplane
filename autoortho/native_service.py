@@ -200,9 +200,8 @@ class NativeService:
                        detail=str(xplane)),
                   dict(id='scenery', title='Scenery installed', ok=bool(mounts),
                        detail=f'{len(mounts)} region mount' + ('s' if len(mounts) != 1 else '')),
-                  dict(id='storage', title='Available storage', ok=free >= 2 * 1024**3,
+                  dict(id='storage', title='Available storage', ok=free >= 2e9,
                        detail=f'{free / 1e9:.1f} GB available')]
-        log_dir = Path.home() / '.autoortho-data/logs'
         report_dir = Path(cfg.get('diagnostics', 'report_dir', fallback=str(Path.home() / '.autoortho-data/reports')))
         reports = [dict(id=str(p), name=p.parent.name, path=str(p), modified=p.stat().st_mtime)
                    for p in report_dir.glob('performance-*/report.md')]
@@ -211,9 +210,7 @@ class NativeService:
                     mounts=mounts, settings=settings_schema(text),
                     revision=hashlib.sha256(text.encode()).hexdigest(), regions=self.installed(),
                     catalog=self.catalog, tasks=tasks, freeBytes=free, reports=reports[:20],
-                    logPath=str(log_dir / 'autoortho.log'), reportsPath=str(report_dir),
-                    port=cfg.getint('flightdata', 'webui_port', fallback=5847), plan=self.plan,
-                    engineExit=code)
+                    port=cfg.getint('flightdata', 'webui_port', fallback=5847), engineExit=code)
 
     def start(self):
         with self.lock:
@@ -327,8 +324,7 @@ class NativeService:
             if any(task['state'] == 'running' for task in self.tasks.values()):
                 raise ValueError('A scenery operation is already running.')
             task_id = str(time.time_ns())
-            self.tasks[task_id] = dict(id=task_id, title=f'{action.capitalize()} {region_id}',
-                                       region=region_id, action=action,
+            self.tasks[task_id] = dict(id=task_id, region=region_id, action=action,
                                        state='running', message='Preparing…', progress=None)
 
         def run():

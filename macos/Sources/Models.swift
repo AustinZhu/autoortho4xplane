@@ -31,12 +31,11 @@ struct SceneryMount: Codable, Identifiable {
 }
 struct EngineTask: Codable, Identifiable {
     let id: String
-    let title: String
+    let region: String
+    let action: String
     let state: String
     let message: String
     let progress: Double?
-    let region: String?
-    let action: String?
 }
 struct Report: Codable, Identifiable {
     let id: String
@@ -57,8 +56,6 @@ struct Snapshot: Codable {
     let tasks: [EngineTask]
     let freeBytes: Int64
     let reports: [Report]
-    let logPath: String
-    let reportsPath: String
     let port: Int
     let engineExit: Int?
 }

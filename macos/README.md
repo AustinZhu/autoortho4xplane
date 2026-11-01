@@ -16,6 +16,9 @@ python macos/build.py --engine-app /Applications/AutoOrtho.app
 open "macos/build/AutoOrtho.app"
 ```
 
+The builder never overwrites an earlier build: remove `macos/build/AutoOrtho.app`
+or pass a different `--output` first.
+
 Use the same Python minor version as the engine bundle. The current local bundle
 uses Python 3.14. The builder preserves every existing engine module verbatim,
 adds `native_service`, and changes only the executable's entry dispatcher.
@@ -38,7 +41,8 @@ Do not run two streaming engines at the same time.
 - Flight Plan: SimBrief loading, a native MapKit route/aircraft map, and an
   imagery override inspector. The map display does not change terrain imagery.
 - Activity: actual progress and failures from existing scenery operations.
-- Diagnostics: searchable/exportable logs and recorded performance reports.
+- Diagnostics: a filterable, exportable log that follows new entries, and
+  recorded performance reports.
 - Settings: user-facing engine settings on ordered pages (General, Imagery,
   Loading, Storage, Scenery, Flight, Advanced, Diagnostics) grouped as in the
   Qt app, with authored descriptions, native toggles, pickers, range-limited
@@ -49,8 +53,9 @@ Do not run two streaming engines at the same time.
 Command-Return starts or stops streaming (Streaming menu). Command-1 through
 Command-5 navigate (View menu); Command-comma opens Settings. Command-S applies
 settings within that window. The menu-bar item shows status and can start or
-stop streaming after the main window closes. Every stop asks for confirmation. Quitting waits for
-graceful engine shutdown; an unmount timeout never force-kills it.
+stop streaming after the main window closes. Every stop asks for confirmation.
+Quitting waits for graceful engine shutdown; an unmount timeout never
+force-kills it.
 
 Read-only refresh does not load the configuration-writing engine modules.
 Saving changes preserves comments and unrelated settings, rejects stale edits

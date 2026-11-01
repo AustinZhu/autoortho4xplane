@@ -99,9 +99,9 @@ final class AppModel: ObservableObject {
         return (snapshot?.regions ?? []).first { $0.id == id }?.name ?? (snapshot?.catalog ?? []).first { $0.id == id }?.name ?? name
     }
     func taskTitle(_ task: EngineTask) -> String {
-        guard let action = task.action.flatMap(SceneryAction.init(rawValue:)), let id = task.region else { return task.title }
-        let name = (snapshot?.catalog ?? []).first { $0.id == id }?.name ?? (snapshot?.regions ?? []).first { $0.id == id }?.name ?? id
-        return "\(action.progressTitle) \(name)"
+        let name = (snapshot?.catalog ?? []).first { $0.id == task.region }?.name
+            ?? (snapshot?.regions ?? []).first { $0.id == task.region }?.name ?? task.region
+        return "\(SceneryAction(rawValue: task.action)?.progressTitle ?? task.action.capitalized) \(name)"
     }
 
     func begin() {
