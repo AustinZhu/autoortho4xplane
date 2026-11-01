@@ -297,12 +297,17 @@ class NativeService:
         if self.engine_lock is not None:
             self.engine_lock.close()
             self.engine_lock = None
+        with self.lock:
+            # A requested stop is not a failure, whatever the exit code.
+            if self.process is process and process is not None and process.poll() is not None:
+                self.process = None
         return {'stopped': True}
 
-    def wait_for_engine(self, process, timeout=120, settle=20):
+    def wait_for_engine(self, process, timeout=150, settle=60):
         """Wait for the engine to exit. It is never force-quit while scenery is mounted; once
         everything is unmounted, a process still alive after `settle` seconds is hung and is
-        killed along with its children."""
+        killed along with its children. `settle` exceeds the engine's own shutdown budget
+        (8 s per worker, 8 s more after killing one, 5 s for the broker, plus reporting)."""
         deadline = time.monotonic() + timeout
         unmounted_since = None
         while process.poll() is None:
