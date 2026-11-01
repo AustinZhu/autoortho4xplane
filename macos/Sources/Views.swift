@@ -351,9 +351,12 @@ struct ActivityView: View {
                     if task.state == "running" {
                         if let value = task.progress { ProgressView(value: value) } else { ProgressView().controlSize(.small) }
                     }
-                    HStack {
-                        Text(task.message).foregroundStyle(.secondary).textSelection(.enabled)
-                        if task.state == "failed" { Spacer(); Button("View Log") { model.destination = .diagnostics } }
+                    // The title already says a task completed; only running and failed tasks need detail.
+                    if task.state != "complete" {
+                        HStack {
+                            Text(task.message).foregroundStyle(.secondary).textSelection(.enabled)
+                            if task.state == "failed" { Spacer(); Button("View Log") { model.destination = .diagnostics } }
+                        }
                     }
                 }.padding(.vertical, 10)
             }
